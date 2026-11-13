@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use Open Source Ad-hoc Biology Tools (OSABT) in your research, please cite it using the metadata below."
+title: "Open Source Ad-hoc Biology Tools (OSABT)"
+version: "2.0.0"
+date-released: "2026-11-12"
+license: "GPL-3.0-or-later"
+repository-code: "https://github.com/bpwhite/osabt"
+url: "https://crvscience.com/labs"
+authors:
+  - family-names: "White"
+    given-names: "Bryan P."
+    affiliation: "CRV Science Network"
+keywords:
+  - bioinformatics
+  - computational-biology
+  - ecology
+  - rust
+  - open-science

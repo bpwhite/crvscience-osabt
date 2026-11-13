@@ -1,0 +1,36 @@
+[package]
+name = "osabt"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Bryan P. White <https://crvscience.com>"]
+license = "GPL-3.0-or-later"
+description = "Open Source Ad-hoc Biology Tools (OSABT) — unified 20-tool GPL-3.0 CLI, TUI, and GUI biology toolkit for the CRV Science Network."
+repository = "https://github.com/bpwhite/osabt"
+homepage = "https://crvscience.com/labs"
+keywords = ["biology", "bioinformatics", "ecology", "ecophysiology", "biostatistics"]
+categories = ["science", "command-line-utilities", "gui", "wasm"]
+
+[lib]
+name = "osabt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "osabt"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli", "tui", "gui"]
+cli = ["dep:clap"]
+tui = ["cli", "dep:ratatui", "dep:crossterm"]
+gui = ["dep:eframe", "dep:egui"]
+serde = ["dep:serde"]
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"], optional = true }
+crossterm = { version = "0.28", optional = true }
+eframe = { version = "0.29", optional = true }
+egui = { version = "0.29", optional = true }
+ratatui = { version = "0.29", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
