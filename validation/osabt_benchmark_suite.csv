@@ -1,0 +1,28 @@
+test_id,module,engine_function,metric,value,unit
+T1,flux_leaf,fit_fvcb_aci_curve,vcmax,85.733494,umol m^-2 s^-1
+T1,flux_leaf,fit_fvcb_aci_curve,jmax,151.876300,umol m^-2 s^-1
+T1,flux_leaf,fit_fvcb_aci_curve,tpu,10.562911,umol m^-2 s^-1
+T1,flux_leaf,fit_fvcb_aci_curve,r_squared,0.999957,dimensionless
+T1,thermo,calc_perfect_duplex,tm_salt_corrected_c,64.825998,C
+T1,thermo,calc_perfect_duplex,delta_g_37_kcal,-25.846215,kcal/mol
+T1,survival_core,compute_log_rank_test,chi_square,17.754147,chi2
+T1,survival_core,compute_log_rank_test,p_value,0.000025,probability
+T1,survival_core,fit_cox_proportional_hazards,hazard_ratio,7.809597,ratio
+T1,survival_tox,fit_ecotox_lc50(Probit),lc50,27.001851,ug/L
+T1,survival_tox,fit_ecotox_lc50(Logit),lc50,26.964215,ug/L
+T2,popgen_core,analyze_popgen_fasta,nucleotide_diversity_pi,0.054674,per_site
+T2,popgen_core,analyze_popgen_fasta,tajima_d,-0.298525,dimensionless
+T2,popgen_core,analyze_popgen_fasta,hudson_fst_max,0.794521,dimensionless
+T2,popgen_core,analyze_diploid_vcf,multilocus_wc_fst,0.226361,dimensionless
+T2,plasmid_digest,simulate_restriction_digest,fragment_count,3.000000,fragments
+T2,gibson,design_gibson_assembly,assembled_length_bp,1047.000000,bp
+T2,plasmid_digest,score_overhang_set_fidelity,overhang_fidelity_pct,99.600000,percent
+T3,flux_stream,fit_odum_stream_metabolism,gpp_g_o2_m2_d,2.400149,g O2 m^-2 d^-1
+T3,flux_stream,fit_odum_stream_metabolism,er_g_o2_m2_d,4.100297,g O2 m^-2 d^-1
+T3,flux_stream,fit_odum_stream_metabolism,nep_g_o2_m2_d,-1.700148,g O2 m^-2 d^-1
+T3,flux_stream,fit_odum_stream_metabolism,k600_per_day,7.500920,d^-1
+T3,kinetics_core,fit_global_reversible_inhibition,best_ki_nm,21.988926,nM
+T3,kinetics_core,fit_global_reversible_inhibition,best_akaike_weight,0.756711,probability
+T3,kinetics_core,fit_morrison_tight_binding,active_enzyme_et_nm,20.018994,nM
+T3,kinetics_core,fit_morrison_tight_binding,ki_app_nm,1.347453,nM
+T3,kinetics_core,fit_morrison_tight_binding,r_squared,0.999997,dimensionless

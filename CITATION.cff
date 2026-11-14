@@ -1,18 +1,24 @@
 cff-version: 1.2.0
-message: "If you use Open Source Ad-hoc Biology Tools (OSABT) in your research, please cite it using the metadata below."
-title: "Open Source Ad-hoc Biology Tools (OSABT)"
+message: "If you use CRV Science OSABT in academic research, please cite the software and associated CRV Science Apps preprint below."
+type: software
+title: "OSABT: Unified Command-Line and Terminal Workbench for Ecophysiology, Population Genetics, and Stoichiometric Flux Balance"
 version: "2.0.0"
-date-released: "2026-11-12"
 license: "GPL-3.0-or-later"
-repository-code: "https://github.com/bpwhite/osabt"
-url: "https://crvscience.com/labs"
+repository-code: "https://github.com/bpwhite/crvscience-osabt"
+url: "https://crvscience.com/apps"
+doi: "10.5281/zenodo.24222388"
 authors:
   - family-names: "White"
     given-names: "Bryan P."
     affiliation: "CRV Science Network"
-keywords:
-  - bioinformatics
-  - computational-biology
-  - ecology
-  - rust
-  - open-science
+preferred-citation:
+  type: article
+  title: "OSABT: Unified Command-Line and Terminal Workbench for Ecophysiology, Population Genetics, and Stoichiometric Flux Balance"
+  authors:
+    - family-names: "White"
+      given-names: "Bryan P."
+      affiliation: "CRV Science Network"
+  doi: "10.5281/zenodo.24222388"
+  url: "https://crvscience.com/apps/preprints/osabt-modular-biostatistics-toolkit"
+  journal: "CRV Science Apps Preprint Series (APP-PREPRINT-08)"
+  year: 2026

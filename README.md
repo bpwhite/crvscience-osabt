@@ -64,3 +64,12 @@ cargo run -- flux gui
 
 Copyright (C) 2026 Bryan P. White — CRV Science Network.  
 Licensed under the **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`). See [`LICENSE`](LICENSE) and <https://www.gnu.org/licenses/gpl-3.0.txt>.
+
+## Citation & CRV Science Apps Hub
+
+- **CRV Science Apps Hub**: <https://crvscience.com/apps>
+- **Companion Preprint (`APP-PREPRINT-08`)**: [OSABT: Unified Command-Line and Terminal Workbench for Ecophysiology, Population Genetics, and Stoichiometric Flux Balance](https://crvscience.com/apps/preprints/osabt-modular-biostatistics-toolkit)
+- **Concept DOI**: [`10.5281/zenodo.24222388`](https://doi.org/10.5281/zenodo.24222388)
+- **Source Repository**: <https://github.com/bpwhite/crvscience-osabt>
+
+See [`CITATION.cff`](CITATION.cff) for machine-readable BibTeX/CFF metadata and [`validation/README.md`](validation/README.md) for the headless validation benchmark outputs (`cargo test --test headless_validation`).
