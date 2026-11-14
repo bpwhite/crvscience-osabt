@@ -348,3 +348,34 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infoevo_core::{
+        compute_alignment_information, compute_epistasis_mip_matrix,
+        demo_ecoli_promoter_and_stemloop_fasta, parse_fasta_alignment,
+        simulate_kimura_selection_information,
+    };
+
+    #[test]
+    fn renders_valid_infoevo_logo_epistasis_and_kimura_svgs_with_escaping() {
+        let aln = parse_fasta_alignment("demo", demo_ecoli_promoter_and_stemloop_fasta())
+            .expect("demo FASTA parses");
+        let info = compute_alignment_information(&aln, true, None);
+        let mip = compute_epistasis_mip_matrix(&aln, 0.25, 8);
+        let kimura = simulate_kimura_selection_information(&[0.5, 0.3, 0.2], &[0.0, 0.4, 0.8], 1.0, 20)
+            .expect("Kimura trajectory succeeds");
+
+        let logo_svg = render_sequence_logo_svg(&info, "Logo <Promoter>");
+        let mip_svg = render_epistasis_mip_svg(&mip, &info, "MIp <Matrix>");
+        let kim_svg = render_kimura_trajectory_svg(&kimura, "Kimura <Gain & Load>");
+
+        for svg in [&logo_svg, &mip_svg, &kim_svg] {
+            assert!(svg.starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
+        }
+        assert!(logo_svg.contains("Logo &lt;Promoter&gt;"));
+        assert!(mip_svg.contains("MIp &lt;Matrix&gt;"));
+        assert!(kim_svg.contains("Kimura &lt;Gain &amp; Load&gt;"));
+    }
+}

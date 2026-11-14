@@ -269,3 +269,37 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kinetics_core::{
+        demo_competitive_kinase_matrix_csv, demo_morrison_tight_binding_csv,
+        fit_global_reversible_inhibition, fit_morrison_tight_binding, parse_kinetics_csv,
+    };
+
+    #[test]
+    fn renders_valid_inhibition_and_morrison_svgs() {
+        let pts = parse_kinetics_csv(demo_competitive_kinase_matrix_csv()).expect("kinetics CSV parses");
+        let fits = fit_global_reversible_inhibition(&pts).expect("global fit succeeds");
+        let inh_svg = render_global_inhibition_svg(&pts, &fits[0], "Kinase <2D>");
+        assert!(inh_svg.starts_with("<svg") && inh_svg.trim_end().ends_with("</svg>"));
+        assert!(inh_svg.contains("Kinase &lt;2D&gt;"));
+
+        let obs: Vec<(f64, f64)> = demo_morrison_tight_binding_csv()
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let mut parts = line.split(',');
+                let x: f64 = parts.next()?.trim().parse().ok()?;
+                let y: f64 = parts.next()?.trim().parse().ok()?;
+                Some((x, y))
+            })
+            .collect();
+        let mf = fit_morrison_tight_binding(&obs, None, Some(25.0), Some((70.0, 35.0)))
+            .expect("Morrison fit succeeds");
+        let m_svg = render_morrison_svg(&obs, &mf, "Morrison <Et>");
+        assert!(m_svg.starts_with("<svg") && m_svg.trim_end().ends_with("</svg>"));
+        assert!(m_svg.contains("Morrison &lt;Et&gt;"));
+    }
+}

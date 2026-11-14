@@ -613,7 +613,7 @@ mod tests {
 
     #[test]
     fn fits_agonist_4pl_with_ec90_above_ec50() {
-        let doses = [0.1, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0];
+        let doses: [f64; 8] = [0.1, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0];
         let pts: Vec<(f64, f64)> = doses
             .iter()
             .map(|&c| (c, eval_4pl_log10(c.log10(), 5.0, 95.0, 1.30103, 1.1)))

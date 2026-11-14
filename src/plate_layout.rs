@@ -510,3 +510,66 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plate_format_dims_and_deterministic_randomization_preserve_moat_and_wells() {
+        assert_eq!(PlateFormat::Well96.dims(), (8, 12));
+        assert_eq!(PlateFormat::Well384.dims(), (16, 24));
+
+        let cfg = PlatePlanConfig::default();
+        let plate_a = generate_randomized_plate(&cfg).expect("96-well layout succeeds");
+        let plate_b = generate_randomized_plate(&cfg).expect("identical seed reproduces layout");
+        assert_eq!(plate_a.wells.len(), 96);
+        assert_eq!(plate_a.wells[0].well_id, "A01");
+        assert_eq!(plate_a.wells[95].well_id, "H12");
+
+        for (wa, wb) in plate_a.wells.iter().zip(plate_b.wells.iter()) {
+            assert_eq!(wa.well_id, wb.well_id);
+            assert_eq!(wa.role, wb.role);
+            assert_eq!(wa.compound_name, wb.compound_name);
+            assert_eq!(wa.concentration_nm, wb.concentration_nm);
+        }
+
+        let moat_count = plate_a
+            .wells
+            .iter()
+            .filter(|w| w.role == WellRole::BufferMoat)
+            .count();
+        assert_eq!(moat_count, 36);
+
+        let neg_count = plate_a
+            .wells
+            .iter()
+            .filter(|w| w.role == WellRole::NegativeControl)
+            .count();
+        let pos_count = plate_a
+            .wells
+            .iter()
+            .filter(|w| w.role == WellRole::PositiveControl)
+            .count();
+        assert_eq!(neg_count, cfg.negative_control_wells);
+        assert_eq!(pos_count, cfg.positive_control_wells);
+
+        let csv = export_plate_pipetting_csv(&plate_a);
+        assert_eq!(csv.lines().count(), 97);
+        let md = export_bench_pipetting_markdown(&plate_a, &cfg);
+        assert!(md.contains(&cfg.plate_name));
+        let svg = render_plate_map_svg(&plate_a);
+        assert!(svg.starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
+    }
+
+    #[test]
+    fn plate_384_layout_dimensions_and_corner_ids() {
+        let mut cfg = PlatePlanConfig::default();
+        cfg.format = PlateFormat::Well384;
+        cfg.moat_rings = 1;
+        let plate = generate_randomized_plate(&cfg).expect("384-well layout succeeds");
+        assert_eq!(plate.wells.len(), 384);
+        assert_eq!(plate.wells.first().unwrap().well_id, "A01");
+        assert_eq!(plate.wells.last().unwrap().well_id, "P24");
+    }
+}

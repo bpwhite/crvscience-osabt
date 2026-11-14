@@ -311,7 +311,7 @@ impl MorphoStudioApp {
         painter.circle_stroke(
             rect.center(),
             roi_r,
-            Stroke::new(1.4, Color32::from_rgb(56, 189, 248)),
+            Stroke::new(1.4_f32, Color32::from_rgb(56, 189, 248)),
         );
 
         for c in &self.cfu_report.colonies {
@@ -327,7 +327,7 @@ impl MorphoStudioApp {
             painter.circle_stroke(
                 p,
                 (c.equivalent_radius_px as f32 * scale).max(4.0),
-                Stroke::new(1.8, col),
+                Stroke::new(1.8_f32, col),
             );
         }
 
@@ -483,7 +483,7 @@ impl MorphoStudioApp {
             }
             painter.add(Shape::line(
                 cons_pts,
-                Stroke::new(2.2, Color32::from_rgb(248, 113, 113)),
+                Stroke::new(2.2_f32, Color32::from_rgb(248, 113, 113)),
             ));
         }
     }

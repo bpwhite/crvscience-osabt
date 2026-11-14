@@ -207,7 +207,7 @@ impl PopGenGuiApp {
                 let p2 = to_screen(net.nodes[edge.to_idx].pos_xy);
                 painter.line_segment(
                     [p1, p2],
-                    egui::Stroke::new(2.0, egui::Color32::from_rgb(71, 85, 105)),
+                    egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(71, 85, 105)),
                 );
                 let dir = (p2 - p1).normalized();
                 let perp = egui::vec2(-dir.y, dir.x);
@@ -217,7 +217,7 @@ impl PopGenGuiApp {
                     let mid = p1 + (p2 - p1) * frac;
                     painter.line_segment(
                         [mid - perp * 5.0, mid + perp * 5.0],
-                        egui::Stroke::new(1.8, egui::Color32::from_rgb(220, 38, 38)),
+                        egui::Stroke::new(1.8_f32, egui::Color32::from_rgb(220, 38, 38)),
                     );
                 }
             }
@@ -255,7 +255,7 @@ impl PopGenGuiApp {
                     painter.circle_stroke(
                         center,
                         rad,
-                        egui::Stroke::new(1.6, egui::Color32::from_rgb(15, 23, 42)),
+                        egui::Stroke::new(1.6_f32, egui::Color32::from_rgb(15, 23, 42)),
                     );
                 }
                 painter.text(

@@ -599,3 +599,56 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn median_joining_infers_missing_steiner_node_and_renders_svg() {
+        let records = vec![
+            PopSequenceRecord {
+                sample_id: "s1".into(),
+                population: "North".into(),
+                sequence: "GAAAAA".into(),
+            },
+            PopSequenceRecord {
+                sample_id: "s2".into(),
+                population: "North".into(),
+                sequence: "GAAAAA".into(),
+            },
+            PopSequenceRecord {
+                sample_id: "s3".into(),
+                population: "South".into(),
+                sequence: "ACAAAA".into(),
+            },
+            PopSequenceRecord {
+                sample_id: "s4".into(),
+                population: "West".into(),
+                sequence: "AAATAA".into(),
+            },
+        ];
+
+        let net = build_median_joining_network(&records, 0).expect("MJN succeeds");
+        assert_eq!(net.sampled_haplotypes, 3);
+        assert!(
+            net.inferred_median_vectors >= 1 && net.nodes.iter().any(|n| n.is_median_vector),
+            "expected inferred median vector for 3-way star split"
+        );
+        let observed_total: usize = net
+            .nodes
+            .iter()
+            .filter(|n| !n.is_median_vector)
+            .map(|n| n.total_samples)
+            .sum();
+        assert_eq!(observed_total, records.len());
+        assert!(net
+            .edges
+            .iter()
+            .all(|e| e.from_idx < net.nodes.len() && e.to_idx < net.nodes.len() && e.mutations > 0));
+
+        let svg = render_popgen_network_svg(&net, "Steiner <Median> Network");
+        assert!(svg.starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
+        assert!(svg.contains("Steiner &lt;Median&gt; Network"));
+    }
+}

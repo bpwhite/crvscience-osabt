@@ -618,8 +618,8 @@ mod tests {
     fn flags_3p_extensible_primer_dimer_and_g4_trap() {
         let cond = ReactionConditions::for_preset(PolymerasePreset::Q5);
         let (_, dim_3p) = score_dimer(
-            "ACGTACGTACGTGCATCGAT",
-            "ACGTACGTACGTGCATCGAT",
+            "ACGTACGTACGTGCGATCGC",
+            "ACGTACGTACGTGCGATCGC",
             &cond,
             37.0,
         )

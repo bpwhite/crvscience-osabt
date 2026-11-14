@@ -278,8 +278,8 @@ impl KineticsStudioApp {
             Pos2::new(mid_x + 24.0, rect.top() + 24.0),
             Pos2::new(rect.right() - 24.0, rect.bottom() - 30.0),
         );
-        painter.rect_stroke(left_box, 2.0, Stroke::new(1.0, Color32::GRAY));
-        painter.rect_stroke(right_box, 2.0, Stroke::new(1.0, Color32::GRAY));
+        painter.rect_stroke(left_box, 2.0, Stroke::new(1.0_f32, Color32::GRAY));
+        painter.rect_stroke(right_box, 2.0, Stroke::new(1.0_f32, Color32::GRAY));
 
         let s_max = self
             .matrix_points
@@ -334,8 +334,8 @@ impl KineticsStudioApp {
                     right_box.left() + (((vp / s) / eh_max).clamp(0.0, 1.0) as f32) * right_box.width();
                 eh_line.push(Pos2::new(px2, py));
             }
-            painter.add(Shape::line(mm_line, Stroke::new(2.1, col)));
-            painter.add(Shape::line(eh_line, Stroke::new(1.6, col)));
+            painter.add(Shape::line(mm_line, Stroke::new(2.1_f32, col)));
+            painter.add(Shape::line(eh_line, Stroke::new(1.6_f32, col)));
 
             for pt in grp {
                 let py =
@@ -443,7 +443,7 @@ impl KineticsStudioApp {
                 cols[1].allocate_painter(Vec2::new(avail.x, avail.y.max(280.0)), Sense::hover());
             let r = resp.rect.shrink(28.0);
             painter.rect_filled(resp.rect, 4.0, Color32::from_rgb(15, 23, 42));
-            painter.rect_stroke(r, 2.0, Stroke::new(1.0, Color32::GRAY));
+            painter.rect_stroke(r, 2.0, Stroke::new(1.0_f32, Color32::GRAY));
 
             let i_max = self
                 .morrison_obs
@@ -467,7 +467,7 @@ impl KineticsStudioApp {
             }
             painter.add(Shape::line(
                 line,
-                Stroke::new(2.5, Color32::from_rgb(248, 113, 113)),
+                Stroke::new(2.5_f32, Color32::from_rgb(248, 113, 113)),
             ));
             for &(it, vy) in &self.morrison_obs {
                 let px = r.left() + ((it / i_max) as f32) * r.width();

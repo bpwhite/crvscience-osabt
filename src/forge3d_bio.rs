@@ -316,12 +316,13 @@ pub fn generate_diatom_frustule_mesh(
     target_mm: f32,
 ) -> TriMesh {
     let n = grid_res.clamp(32, 88);
-    let nz = (n / 2).max(18);
+    let nz = (n / 2).max(22);
     let vox = 2.4 / (n as f32);
-    let mut grid = ScalarGrid3D::new(n, n, nz, [-1.2, -1.2, -0.45], vox, -1.0);
+    let mut grid = ScalarGrid3D::new(n, n, nz, [-1.2, -1.2, -0.50], vox, -1.0);
 
     let sqrt3 = 3.0_f32.sqrt();
     let sp = pore_spacing.clamp(0.14, 0.45);
+    let min_half = vox * 1.45;
 
     for z in 1..(nz - 1) {
         for y in 1..(n - 1) {
@@ -338,7 +339,11 @@ pub fn generate_diatom_frustule_mesh(
 
                 let dome_z = 0.14 * (1.0 - (rho / r_edge.max(0.1)).powi(2)).max(0.0);
                 let is_rim = rho > r_edge * 0.84 && rho <= r_edge;
-                let half_thick = if is_rim { 0.12 } else { 0.065 };
+                let half_thick = if is_rim {
+                    0.12_f32.max(min_half * 1.3)
+                } else {
+                    0.065_f32.max(min_half)
+                };
                 let dz = (p[2] - dome_z).abs();
 
                 let mut sdf = (r_edge - rho).min(half_thick - dz);

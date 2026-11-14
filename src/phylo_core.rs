@@ -543,7 +543,7 @@ impl PhyloTree {
         let path_edges = self.directed_path_between(u, v)?;
         let mut accum = 0.0_f64;
 
-        for (from_node, to_node, child_with_bl, bl) in path_edges {
+        for (from_node, _to_node, child_with_bl, bl) in path_edges {
             if accum + bl >= half && bl > 0.0 {
                 let offset_from_from = half - accum;
                 // `child_with_bl` is whichever endpoint (`from_node` or `to_node`) is currently the child of the other
@@ -840,7 +840,7 @@ pub fn parse_newick(tree_name: &str, newick: &str) -> Result<PhyloTree, String> 
     let root = parse_subtree(&bytes, &mut pos, &mut nodes, None)?;
     skip_ws(&bytes, &mut pos);
     if pos < bytes.len() && bytes[pos] == ';' {
-        pos += 1;
+        let _ = pos;
     }
 
     Ok(PhyloTree {

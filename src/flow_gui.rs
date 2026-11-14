@@ -96,32 +96,42 @@ impl FlowGuiApp {
             ..LogicleParams::default()
         };
         self.scale = LogicleScale::new(params);
-        let ds = self.active_ds();
-        self.quad_stats = evaluate_quadrant_gates(
-            ds,
-            self.x_ch,
-            self.y_ch,
-            self.x_cut_disp,
-            self.y_cut_disp,
-            &self.scale,
-        )
-        .unwrap_or_default();
+        let (quad_stats, live_gate_stats, status_msg) = {
+            let ds = self.active_ds();
+            let quad_stats = evaluate_quadrant_gates(
+                ds,
+                self.x_ch,
+                self.y_ch,
+                self.x_cut_disp,
+                self.y_cut_disp,
+                &self.scale,
+            )
+            .unwrap_or_default();
 
-        // Optional Scatter Live-Cell polygon gate when FSC-A (0) & SSC-A (1) exist
-        if ds.channels.len() >= 2 {
-            let poly = PolygonGate {
-                name: String::from("Live_Singlet_Scatter"),
-                vertices: vec![(0.45, 0.35), (0.95, 0.35), (0.95, 0.90), (0.45, 0.90)],
+            // Optional Scatter Live-Cell polygon gate when FSC-A (0) & SSC-A (1) exist
+            let live_gate_stats = if ds.channels.len() >= 2 {
+                let poly = PolygonGate {
+                    name: String::from("Live_Singlet_Scatter"),
+                    vertices: vec![(0.45, 0.35), (0.95, 0.35), (0.95, 0.90), (0.45, 0.90)],
+                };
+                evaluate_polygon_gate(ds, 0, 1, &poly, &self.scale).ok()
+            } else {
+                None
             };
-            self.live_gate_stats = evaluate_polygon_gate(ds, 0, 1, &poly, &self.scale).ok();
+            let status_msg = format!(
+                "Loaded {} ({} events x {} channels) | Compensation: {}",
+                ds.version,
+                ds.num_events,
+                ds.channels.len(),
+                if self.apply_compensation { "ON (S^-1 applied)" } else { "RAW" }
+            );
+            (quad_stats, live_gate_stats, status_msg)
+        };
+        self.quad_stats = quad_stats;
+        if let Some(stats) = live_gate_stats {
+            self.live_gate_stats = Some(stats);
         }
-        self.status_msg = format!(
-            "Loaded {} ({} events x {} channels) | Compensation: {}",
-            ds.version,
-            ds.num_events,
-            ds.channels.len(),
-            if self.apply_compensation { "ON (S^-1 applied)" } else { "RAW" }
-        );
+        self.status_msg = status_msg;
     }
 }
 
@@ -203,11 +213,11 @@ impl eframe::App for FlowGuiApp {
                 let qy = rect.bottom() - (self.y_cut_disp as f32) * rect.height();
                 painter.line_segment(
                     [egui::pos2(qx, rect.top()), egui::pos2(qx, rect.bottom())],
-                    egui::Stroke::new(1.5, egui::Color32::from_rgb(15, 23, 42)),
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(15, 23, 42)),
                 );
                 painter.line_segment(
                     [egui::pos2(rect.left(), qy), egui::pos2(rect.right(), qy)],
-                    egui::Stroke::new(1.5, egui::Color32::from_rgb(15, 23, 42)),
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(15, 23, 42)),
                 );
 
                 // Right column: Channel selectors + Quadrant statistics

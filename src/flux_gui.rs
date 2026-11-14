@@ -177,7 +177,7 @@ impl FluxGuiApp {
             }
             painter.add(egui::Shape::line(
                 curve_pts,
-                egui::Stroke::new(2.4, egui::Color32::from_rgb(22, 163, 74)),
+                egui::Stroke::new(2.4_f32, egui::Color32::from_rgb(22, 163, 74)),
             ));
 
             for (p, st) in self.aci_pts.iter().zip(&self.aci_fit.limiting_states) {
@@ -241,11 +241,11 @@ impl FluxGuiApp {
                 .collect();
             painter.add(egui::Shape::line(
                 sat_line,
-                egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 116, 139)),
+                egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 116, 139)),
             ));
             painter.add(egui::Shape::line(
                 mod_line,
-                egui::Stroke::new(2.4, egui::Color32::from_rgb(37, 99, 235)),
+                egui::Stroke::new(2.4_f32, egui::Color32::from_rgb(37, 99, 235)),
             ));
             for p in &self.stream_pts {
                 painter.circle_filled(

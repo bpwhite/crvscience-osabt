@@ -246,35 +246,35 @@ fn parse_pnm_rgb(bytes: &[u8]) -> Result<RgbImage, String> {
     let magic = bytes[1];
     let mut idx = 2usize;
 
-    let mut next_token = |buf: &[u8]| -> Option<String> {
-        while idx < buf.len() {
-            if buf[idx] == b'#' {
-                while idx < buf.len() && buf[idx] != b'\n' {
-                    idx += 1;
+    fn next_token(buf: &[u8], idx: &mut usize) -> Option<String> {
+        while *idx < buf.len() {
+            if buf[*idx] == b'#' {
+                while *idx < buf.len() && buf[*idx] != b'\n' {
+                    *idx += 1;
                 }
-            } else if buf[idx].is_ascii_whitespace() {
-                idx += 1;
+            } else if buf[*idx].is_ascii_whitespace() {
+                *idx += 1;
             } else {
                 break;
             }
         }
-        if idx >= buf.len() {
+        if *idx >= buf.len() {
             return None;
         }
-        let start = idx;
-        while idx < buf.len() && !buf[idx].is_ascii_whitespace() && buf[idx] != b'#' {
-            idx += 1;
+        let start = *idx;
+        while *idx < buf.len() && !buf[*idx].is_ascii_whitespace() && buf[*idx] != b'#' {
+            *idx += 1;
         }
-        std::str::from_utf8(&buf[start..idx]).ok().map(String::from)
-    };
+        std::str::from_utf8(&buf[start..*idx]).ok().map(String::from)
+    }
 
-    let width: usize = next_token(bytes)
+    let width: usize = next_token(bytes, &mut idx)
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| String::from("Invalid PNM width."))?;
-    let height: usize = next_token(bytes)
+    let height: usize = next_token(bytes, &mut idx)
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| String::from("Invalid PNM height."))?;
-    let maxval: u32 = next_token(bytes)
+    let maxval: u32 = next_token(bytes, &mut idx)
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| String::from("Invalid PNM maxval."))?;
     if maxval == 0 {
@@ -308,9 +308,9 @@ fn parse_pnm_rgb(bytes: &[u8]) -> Result<RgbImage, String> {
         b'3' => {
             for y in 0..height {
                 for x in 0..width {
-                    let r = next_token(bytes).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-                    let g = next_token(bytes).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-                    let b = next_token(bytes).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                    let r = next_token(bytes, &mut idx).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                    let g = next_token(bytes, &mut idx).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                    let b = next_token(bytes, &mut idx).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
                     img.set_pixel(
                         x,
                         y,
@@ -326,7 +326,7 @@ fn parse_pnm_rgb(bytes: &[u8]) -> Result<RgbImage, String> {
         b'2' => {
             for y in 0..height {
                 for x in 0..width {
-                    let g = next_token(bytes).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                    let g = next_token(bytes, &mut idx).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
                     let v = ((g * 255) / maxval) as u8;
                     img.set_pixel(x, y, [v, v, v]);
                 }

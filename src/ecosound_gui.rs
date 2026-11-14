@@ -560,7 +560,7 @@ impl eframe::App for EcosoundStudioApp {
                     let y = map_y(f_band);
                     painter.line_segment(
                         [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-                        Stroke::new(1.3, Color32::from_rgba_unmultiplied(56, 189, 248, 200)),
+                        Stroke::new(1.3_f32, Color32::from_rgba_unmultiplied(56, 189, 248, 200)),
                     );
                 }
             }
@@ -577,7 +577,7 @@ impl eframe::App for EcosoundStudioApp {
                 } else {
                     Color32::from_rgb(34, 211, 238)
                 };
-                painter.rect_stroke(b_rect, 2.0, Stroke::new(if is_sel { 2.4 } else { 1.6 }, stroke_col));
+                painter.rect_stroke(b_rect, 2.0, Stroke::new(if is_sel { 2.4 } else { 1.6_f32 }, stroke_col));
                 painter.text(
                     Pos2::new(b_rect.left() + 3.0, (b_rect.top() - 13.0).max(rect.top() + 2.0)),
                     egui::Align2::LEFT_TOP,
@@ -617,7 +617,7 @@ impl eframe::App for EcosoundStudioApp {
                     painter.rect_stroke(
                         preview,
                         2.0,
-                        Stroke::new(2.0, Color32::from_rgb(74, 222, 128)),
+                        Stroke::new(2.0_f32, Color32::from_rgb(74, 222, 128)),
                     );
                 }
             }

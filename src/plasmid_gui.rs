@@ -274,11 +274,11 @@ impl PlasmidStudioApp {
         }
 
         // Backbone double-ring
-        painter.circle_stroke(center, radius, Stroke::new(3.0, Color32::from_rgb(203, 213, 225)));
+        painter.circle_stroke(center, radius, Stroke::new(3.0_f32, Color32::from_rgb(203, 213, 225)));
         painter.circle_stroke(
             center,
             radius - 5.0,
-            Stroke::new(1.2, Color32::from_rgb(100, 116, 139)),
+            Stroke::new(1.2_f32, Color32::from_rgb(100, 116, 139)),
         );
 
         // Highlight currently selected window arc
@@ -293,7 +293,7 @@ impl PlasmidStudioApp {
             );
             painter.add(Shape::line(
                 pts,
-                Stroke::new(6.0, Color32::from_rgb(250, 204, 21)),
+                Stroke::new(6.0_f32, Color32::from_rgb(250, 204, 21)),
             ));
         }
 
@@ -304,7 +304,7 @@ impl PlasmidStudioApp {
             let color = parse_hex_color(&feat.color_hex);
             let r_feat = radius + 14.0 + ((idx % 2) as f32) * 10.0;
             let pts = arc_polyline(center, r_feat, start_a, sweep_a.max(0.05), 36);
-            painter.add(Shape::line(pts, Stroke::new(8.0, color)));
+            painter.add(Shape::line(pts, Stroke::new(8.0_f32, color)));
 
             let mid_a = start_a + sweep_a * 0.5 - PI * 0.5;
             let lbl_pos = center + Vec2::new(mid_a.cos(), mid_a.sin()) * (r_feat + 18.0);
@@ -324,7 +324,7 @@ impl PlasmidStudioApp {
             let r_out = radius + 42.0 + ((u_idx % 2) as f32) * 14.0;
             painter.line_segment(
                 [center + dir * radius, center + dir * r_out],
-                Stroke::new(1.0, Color32::from_rgb(56, 189, 248)),
+                Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)),
             );
             painter.text(
                 center + dir * (r_out + 10.0),
@@ -342,7 +342,7 @@ impl PlasmidStudioApp {
             let pts = arc_polyline(center, radius - 24.0, start_a, sweep_a, 16);
             painter.add(Shape::line(
                 pts,
-                Stroke::new(4.0, Color32::from_rgb(244, 114, 182)),
+                Stroke::new(4.0_f32, Color32::from_rgb(244, 114, 182)),
             ));
         }
 
@@ -525,7 +525,7 @@ impl PlasmidStudioApp {
             };
             gp.line_segment(
                 [Pos2::new(grect.left() + 28.0, y), Pos2::new(grect.left() + 98.0, y)],
-                Stroke::new(if bright { 3.0 } else { 1.6 }, col),
+                Stroke::new(if bright { 3.0 } else { 1.6_f32 }, col),
             );
         }
         for &bp in &lengths {
@@ -534,7 +534,7 @@ impl PlasmidStudioApp {
                 + (gel_migration_fraction(bp, self.agarose_pct) as f32) * (grect.height() - 28.0);
             gp.line_segment(
                 [Pos2::new(grect.left() + 140.0, y), Pos2::new(grect.left() + 220.0, y)],
-                Stroke::new(3.2, Color32::from_rgb(134, 239, 172)),
+                Stroke::new(3.2_f32, Color32::from_rgb(134, 239, 172)),
             );
         }
     }

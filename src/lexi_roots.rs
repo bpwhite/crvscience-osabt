@@ -292,3 +292,41 @@ pub static LEXI_MORPHEME_CATALOG: &[MorphemeEntry] = &[
     MorphemeEntry { canonical_id: "-osis", forms: &["osis"], role: MorphemeRole::Suffix, origin: MorphemeOrigin::Greek, classical_lemma: "-ωσις (-osis)", gloss: "process, state, or condition", cognates: &["symbiosis", "metamorphosis", "apoptosis"] },
     MorphemeEntry { canonical_id: "-ata", forms: &["ata", "atus", "atum", "us", "a", "um", "is", "ii"], role: MorphemeRole::Suffix, origin: MorphemeOrigin::Latin, classical_lemma: "-atus / -us / -a / -um", gloss: "Latin nominal/participial inflection ('provided with')", cognates: &["Chordata", "Vertebrata", "munitum", "plicata"] },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn morpheme_catalog_is_unique_non_empty_and_covers_all_roles_and_origins() {
+        assert!(!LEXI_MORPHEME_CATALOG.is_empty());
+        let mut ids = HashSet::new();
+        let (mut has_prefix, mut has_stem, mut has_suffix) = (false, false, false);
+        let (mut has_greek, mut has_latin, mut has_tax) = (false, false, false);
+
+        for entry in LEXI_MORPHEME_CATALOG {
+            assert!(
+                ids.insert(entry.canonical_id),
+                "duplicate canonical_id: {}",
+                entry.canonical_id
+            );
+            assert!(!entry.forms.is_empty());
+            assert!(!entry.gloss.trim().is_empty());
+            assert!(!entry.cognates.is_empty());
+            match entry.role {
+                MorphemeRole::Prefix => has_prefix = true,
+                MorphemeRole::Stem => has_stem = true,
+                MorphemeRole::Suffix => has_suffix = true,
+            }
+            match entry.origin {
+                MorphemeOrigin::Greek => has_greek = true,
+                MorphemeOrigin::Latin => has_latin = true,
+                MorphemeOrigin::NeoLatinTaxonomic => has_tax = true,
+            }
+        }
+
+        assert!(has_prefix && has_stem && has_suffix);
+        assert!(has_greek && has_latin && has_tax);
+    }
+}

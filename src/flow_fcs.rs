@@ -449,7 +449,7 @@ pub fn demo_fcs_31_bytes() -> Vec<u8> {
     };
 
     // Deterministic LCG PRNG for reproducible cytometry clusters
-    let mut seed = 0x5EED_F10W_u64.wrapping_add(141_592);
+    let mut seed = 0x5EED_F10C_u64.wrapping_add(141_592);
     let mut next_unit = || -> f64 {
         seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
         ((seed >> 33) as f64) / ((1u64 << 31) as f64)

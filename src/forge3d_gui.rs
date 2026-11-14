@@ -384,7 +384,7 @@ impl Forge3dStudioApp {
         draw_list.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
         let stroke = if self.draw_wireframe {
-            Stroke::new(0.6, Color32::from_rgb(15, 23, 42))
+            Stroke::new(0.6_f32, Color32::from_rgb(15, 23, 42))
         } else {
             Stroke::NONE
         };

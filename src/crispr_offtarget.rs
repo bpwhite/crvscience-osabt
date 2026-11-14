@@ -440,7 +440,7 @@ mod tests {
         let exact_ngg = "ACAGCCAGCCAGAGATGGTGGGG";
         let exact_nag = "ACAGCCAGCCAGAGATGGTGAAG";  // AAG -> NAG non-canonical PAM (0.259259)
         let distal_1mm = "GCAGCCAGCCAGAGATGGTGGGG"; // pos 1 PAM-distal mismatch -> high CFD (0.92)
-        let seed_1mm = "ACAGCCAGCCAGAGATGGTGCGG";   // pos 20 seed clash -> low CFD (<0.10)
+        let seed_1mm = "ACAGCCAGCCAGAGATGGTCGGG";   // pos 20 seed clash -> low CFD (<0.10)
 
         let c_exact = calc_cfd_offtarget_score(spacer, exact_ngg).unwrap();
         let c_nag = calc_cfd_offtarget_score(spacer, exact_nag).unwrap();

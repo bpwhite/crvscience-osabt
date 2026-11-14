@@ -245,23 +245,29 @@ pub fn scan_offtarget_amplicons(
     Ok(products)
 }
 
-fn pick_internal_qpcr_probe(
-    template: &str,
-    inner_start: usize,
-    inner_end: usize,
-    target_probe_tm_c: f64,
-    fwd_seq: &str,
-    rev_seq: &str,
-    cond: &ReactionConditions,
-) -> Result<Option<QpcrProbe>, OligoError> {
-    if inner_end <= inner_start || (inner_end - inner_start) < 20 {
-        return Ok(None);
-    }
-    let mut best: Option<QpcrProbe> = None;
+struct PrecomputedProbeCand {
+    start_0: usize,
+    end_excl: usize,
+    strand: Strand,
+    qc: OligoQcReport,
+    base_pen: f64,
+}
 
-    for pos in inner_start..(inner_end.saturating_sub(18)) {
+fn precompute_qpcr_probe_candidates(
+    template: &str,
+    search_start: usize,
+    search_end: usize,
+    target_probe_tm_c: f64,
+    cond: &ReactionConditions,
+) -> Vec<PrecomputedProbeCand> {
+    if search_end <= search_start || (search_end - search_start) < 20 {
+        return Vec::new();
+    }
+    let mut cands = Vec::new();
+    let max_pos = search_end.saturating_sub(19);
+    for pos in search_start..max_pos {
         for plen in 20..=30 {
-            if pos + plen > inner_end {
+            if pos + plen > search_end {
                 break;
             }
             let slice = &template[pos..(pos + plen)];
@@ -284,24 +290,63 @@ fn pick_internal_qpcr_probe(
                 if tm_diff > 4.0 || qc.has_g4_risk {
                     continue;
                 }
-                let (_, df) = score_dimer(&cand, fwd_seq, cond, 37.0)?;
-                let (_, dr) = score_dimer(&cand, rev_seq, cond, 37.0)?;
-                let cross_pen = df.map_or(0.0, |d| (-d.delta_g_kcal - 4.0).max(0.0))
-                    + dr.map_or(0.0, |d| (-d.delta_g_kcal - 4.0).max(0.0));
-
-                let pen = tm_diff * 2.5 + qc.penalty_score * 0.5 + cross_pen * 3.0;
-                if best.as_ref().map_or(true, |b| pen < b.penalty_score) {
-                    best = Some(QpcrProbe {
-                        sequence: cand,
-                        strand,
-                        start_0: pos,
-                        end_0: pos + plen - 1,
-                        tm_c: qc.tm_c,
-                        gc_pct: qc.gc_pct,
-                        penalty_score: (pen * 100.0).round() / 100.0,
-                    });
-                }
+                let base_pen = tm_diff * 2.5 + qc.penalty_score * 0.5;
+                cands.push(PrecomputedProbeCand {
+                    start_0: pos,
+                    end_excl: pos + plen,
+                    strand,
+                    qc,
+                    base_pen,
+                });
             }
+        }
+    }
+    cands.sort_by(|a, b| {
+        a.base_pen
+            .partial_cmp(&b.base_pen)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    cands
+}
+
+fn pick_internal_qpcr_probe_from_pool(
+    pool: &[PrecomputedProbeCand],
+    inner_start: usize,
+    inner_end: usize,
+    fwd_seq: &str,
+    rev_seq: &str,
+    cond: &ReactionConditions,
+) -> Result<Option<QpcrProbe>, OligoError> {
+    if inner_end <= inner_start || (inner_end - inner_start) < 20 {
+        return Ok(None);
+    }
+    let mut best: Option<QpcrProbe> = None;
+    let mut best_raw_pen = f64::INFINITY;
+
+    for pc in pool {
+        if pc.base_pen >= best_raw_pen {
+            break;
+        }
+        if pc.start_0 < inner_start || pc.end_excl > inner_end {
+            continue;
+        }
+        let (_, df) = score_dimer(&pc.qc.sequence, fwd_seq, cond, 37.0)?;
+        let (_, dr) = score_dimer(&pc.qc.sequence, rev_seq, cond, 37.0)?;
+        let cross_pen = df.map_or(0.0, |d| (-d.delta_g_kcal - 4.0).max(0.0))
+            + dr.map_or(0.0, |d| (-d.delta_g_kcal - 4.0).max(0.0));
+
+        let pen = pc.base_pen + cross_pen * 3.0;
+        if pen < best_raw_pen {
+            best_raw_pen = pen;
+            best = Some(QpcrProbe {
+                sequence: pc.qc.sequence.clone(),
+                strand: pc.strand,
+                start_0: pc.start_0,
+                end_0: pc.end_excl - 1,
+                tm_c: pc.qc.tm_c,
+                gc_pct: pc.qc.gc_pct,
+                penalty_score: (pen * 100.0).round() / 100.0,
+            });
         }
     }
 
@@ -399,6 +444,28 @@ pub fn design_pcr_primers(
     rev_cands.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(core::cmp::Ordering::Equal));
     rev_cands.truncate(60);
 
+    let probe_pool = if cfg.include_qpcr_probe && !fwd_cands.is_empty() && !rev_cands.is_empty() {
+        let min_inner_s = fwd_cands
+            .iter()
+            .map(|(f_start, f_qc, _)| f_start + f_qc.length + 1)
+            .min()
+            .unwrap_or(0);
+        let max_inner_e = rev_cands
+            .iter()
+            .map(|(r_end, r_qc, _)| (r_end + 1).saturating_sub(r_qc.length))
+            .max()
+            .unwrap_or(0);
+        precompute_qpcr_probe_candidates(
+            &template,
+            min_inner_s,
+            max_inner_e,
+            cfg.target_tm_c + 9.0,
+            &cond,
+        )
+    } else {
+        Vec::new()
+    };
+
     let mut pairs = Vec::new();
     for (f_start, f_qc, f_score) in &fwd_cands {
         for (r_end, r_qc, r_score) in &rev_cands {
@@ -429,11 +496,10 @@ pub fn design_pcr_primers(
             let probe = if cfg.include_qpcr_probe {
                 let inner_s = f_start + f_qc.length + 1;
                 let inner_e = r_end + 1 - r_qc.length;
-                let prb = pick_internal_qpcr_probe(
-                    &template,
+                let prb = pick_internal_qpcr_probe_from_pool(
+                    &probe_pool,
                     inner_s,
                     inner_e,
-                    cfg.target_tm_c + 9.0,
                     &f_qc.sequence,
                     &r_qc.sequence,
                     &cond,

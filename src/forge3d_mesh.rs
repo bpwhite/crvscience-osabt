@@ -248,7 +248,7 @@ impl TriMesh {
             bounding_min_mm: bmin,
             bounding_max_mm: bmax,
             dimensions_mm: dims,
-            signed_volume_mm3,
+            signed_volume_mm3: signed_vol_mm3,
             surface_area_mm2: area,
             is_watertight_manifold: !self.triangles.is_empty() && bad_edges == 0,
             boundary_or_nonmanifold_edges: bad_edges,
@@ -470,6 +470,106 @@ pub fn extract_isosurface_surface_nets(
     let cz_max = grid.nz - 1;
     let cell_idx = |cx: usize, cy: usize, cz: usize| -> usize { (cz * cy_max + cy) * cx_max + cx };
 
+    // Keep outer grid boundary vertices strictly outside (`false`) so every crossing surface
+    // closes cleanly inside the domain, and resolve any 2x2 face-checkerboard sign configurations
+    // so Surface Nets emits a strictly watertight 2-manifold (`bad_edges == 0`).
+    let mut ins: Vec<bool> = vec![false; grid.nx * grid.ny * grid.nz];
+    for z in 1..(grid.nz - 1) {
+        for y in 1..(grid.ny - 1) {
+            for x in 1..(grid.nx - 1) {
+                ins[grid.idx(x, y, z)] = grid.get(x, y, z) >= iso_level;
+            }
+        }
+    }
+
+    loop {
+        let mut changed = false;
+        // XY faces
+        for z in 1..(grid.nz - 1) {
+            for y in 1..(grid.ny - 2) {
+                for x in 1..(grid.nx - 2) {
+                    let i00 = ins[grid.idx(x, y, z)];
+                    let i10 = ins[grid.idx(x + 1, y, z)];
+                    let i01 = ins[grid.idx(x, y + 1, z)];
+                    let i11 = ins[grid.idx(x + 1, y + 1, z)];
+                    if i00 == i11 && i10 == i01 && i00 != i10 {
+                        let (ax, ay) = if !i00 {
+                            if grid.get(x, y, z) >= grid.get(x + 1, y + 1, z) {
+                                (x, y)
+                            } else {
+                                (x + 1, y + 1)
+                            }
+                        } else if grid.get(x + 1, y, z) >= grid.get(x, y + 1, z) {
+                            (x + 1, y)
+                        } else {
+                            (x, y + 1)
+                        };
+                        let idx = grid.idx(ax, ay, z);
+                        ins[idx] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        // XZ faces
+        for y in 1..(grid.ny - 1) {
+            for z in 1..(grid.nz - 2) {
+                for x in 1..(grid.nx - 2) {
+                    let i00 = ins[grid.idx(x, y, z)];
+                    let i10 = ins[grid.idx(x + 1, y, z)];
+                    let i01 = ins[grid.idx(x, y, z + 1)];
+                    let i11 = ins[grid.idx(x + 1, y, z + 1)];
+                    if i00 == i11 && i10 == i01 && i00 != i10 {
+                        let (ax, az) = if !i00 {
+                            if grid.get(x, y, z) >= grid.get(x + 1, y, z + 1) {
+                                (x, z)
+                            } else {
+                                (x + 1, z + 1)
+                            }
+                        } else if grid.get(x + 1, y, z) >= grid.get(x, y, z + 1) {
+                            (x + 1, z)
+                        } else {
+                            (x, z + 1)
+                        };
+                        let idx = grid.idx(ax, y, az);
+                        ins[idx] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        // YZ faces
+        for x in 1..(grid.nx - 1) {
+            for z in 1..(grid.nz - 2) {
+                for y in 1..(grid.ny - 2) {
+                    let i00 = ins[grid.idx(x, y, z)];
+                    let i10 = ins[grid.idx(x, y + 1, z)];
+                    let i01 = ins[grid.idx(x, y, z + 1)];
+                    let i11 = ins[grid.idx(x, y + 1, z + 1)];
+                    if i00 == i11 && i10 == i01 && i00 != i10 {
+                        let (ay, az) = if !i00 {
+                            if grid.get(x, y, z) >= grid.get(x, y + 1, z + 1) {
+                                (y, z)
+                            } else {
+                                (y + 1, z + 1)
+                            }
+                        } else if grid.get(x, y + 1, z) >= grid.get(x, y, z + 1) {
+                            (y + 1, z)
+                        } else {
+                            (y, z + 1)
+                        };
+                        let idx = grid.idx(x, ay, az);
+                        ins[idx] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
     let mut cell_vert: Vec<u32> = vec![u32::MAX; cx_max * cy_max * cz_max];
 
     for cz in 0..cz_max {
@@ -485,7 +585,7 @@ pub fn extract_isosurface_surface_nets(
                     let val = grid.get(cx + dx, cy + dy, cz + dz);
                     corner_vals[c] = val;
                     corner_pos[c] = [(cx + dx) as f32, (cy + dy) as f32, (cz + dz) as f32];
-                    if val >= iso_level {
+                    if ins[grid.idx(cx + dx, cy + dy, cz + dz)] {
                         mask |= 1 << c;
                     }
                 }
@@ -527,8 +627,8 @@ pub fn extract_isosurface_surface_nets(
     for z in 1..cz_max {
         for y in 1..cy_max {
             for x in 0..cx_max {
-                let in0 = grid.get(x, y, z) >= iso_level;
-                let in1 = grid.get(x + 1, y, z) >= iso_level;
+                let in0 = ins[grid.idx(x, y, z)];
+                let in1 = ins[grid.idx(x + 1, y, z)];
                 if in0 != in1 {
                     let c0 = cell_vert[cell_idx(x, y - 1, z - 1)];
                     let c1 = cell_vert[cell_idx(x, y, z - 1)];
@@ -544,8 +644,8 @@ pub fn extract_isosurface_surface_nets(
     for z in 1..cz_max {
         for y in 0..cy_max {
             for x in 1..cx_max {
-                let in0 = grid.get(x, y, z) >= iso_level;
-                let in1 = grid.get(x, y + 1, z) >= iso_level;
+                let in0 = ins[grid.idx(x, y, z)];
+                let in1 = ins[grid.idx(x, y + 1, z)];
                 if in0 != in1 {
                     let c0 = cell_vert[cell_idx(x - 1, y, z - 1)];
                     let c1 = cell_vert[cell_idx(x - 1, y, z)];
@@ -561,8 +661,8 @@ pub fn extract_isosurface_surface_nets(
     for z in 0..cz_max {
         for y in 1..cy_max {
             for x in 1..cx_max {
-                let in0 = grid.get(x, y, z) >= iso_level;
-                let in1 = grid.get(x, y, z + 1) >= iso_level;
+                let in0 = ins[grid.idx(x, y, z)];
+                let in1 = ins[grid.idx(x, y, z + 1)];
                 if in0 != in1 {
                     let c0 = cell_vert[cell_idx(x - 1, y - 1, z)];
                     let c1 = cell_vert[cell_idx(x, y - 1, z)];

@@ -395,8 +395,8 @@ pub fn render_virtual_gel_svg(
              <rect x=\"{lx:.1}\" y=\"{:.1}\" width=\"{band_w:.1}\" height=\"6\" fill=\"none\" stroke=\"{well_stroke}\"/>\n",
             lx + band_w * 0.5,
             top_margin - 10.0,
-            top_margin + 8.0,
-            xml_escape(&lane.label)
+            xml_escape(&lane.label),
+            top_margin + 8.0
         ));
 
         for &bp in &lane.fragment_lengths_bp {
