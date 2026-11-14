@@ -13,7 +13,7 @@ authors:
     affiliation: "CRV Science Network"
 preferred-citation:
   type: article
-  title: "OSABT: Unified Command-Line and Terminal Workbench for Ecophysiology, Population Genetics, and Stoichiometric Flux Balance"
+  title: "OSABT: All-in-One Toolkit for Plant Physiology, Survival Curves, Genetics, and Enzyme Kinetics"
   authors:
     - family-names: "White"
       given-names: "Bryan P."
