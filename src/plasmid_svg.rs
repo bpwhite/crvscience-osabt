@@ -1,3 +1,18 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 // Part of Open Source Ad-hoc Biology Tools (OSABT)
@@ -13,6 +28,7 @@ use crate::gibson::{CircularBindingSite, Strand};
 use crate::plasmid_digest::find_unique_cutters;
 use crate::plasmid_io::PlasmidRecord;
 use crate::gc_fraction;
+use crate::svg_util::xml_escape;
 
 /// DNA molecular-weight ladder standard for virtual agarose gel electrophoresis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,12 +100,6 @@ pub fn gel_migration_fraction(bp: usize, agarose_pct: f64) -> f64 {
     raw.clamp(0.03, 0.96)
 }
 
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
 
 fn polar_xy(cx: f64, cy: f64, radius: f64, angle_rad: f64) -> (f64, f64) {
     // 0 bp sits at 12 o'clock (-PI/2), advancing clockwise

@@ -1,3 +1,18 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 // Part of Open Source Ad-hoc Biology Tools (OSABT)
@@ -12,16 +27,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap};
 use ratatui::Terminal;
+
+use crate::tui_util::run_tui_session;
 
 use crate::dwc_core::{lint_and_clean_dwc, DwcCleanConfig, DwcDataset, LintSeverity};
 use crate::dwc_export::{
@@ -131,21 +144,7 @@ pub fn run_dwc_tui(
     checklist_path: Option<PathBuf>,
 ) -> Result<(), String> {
     let mut state = DwcTuiState::new(initial_csv, checklist_path)?;
-
-    enable_raw_mode().map_err(|e| format!("Failed enabling terminal raw mode: {e}"))?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)
-        .map_err(|e| format!("Failed entering alternate screen: {e}"))?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal =
-        Terminal::new(backend).map_err(|e| format!("Failed creating Ratatui terminal: {e}"))?;
-
-    let loop_res = run_event_loop(&mut terminal, &mut state);
-
-    let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-    let _ = terminal.show_cursor();
-    loop_res
+    run_tui_session(|terminal| run_event_loop(terminal, &mut state))
 }
 
 fn run_event_loop(

@@ -1,5 +1,7 @@
 # Open Source Ad-hoc Biology Tools (`osabt` `v2.0.0`)
 
+![OSABT Headless Workbench](validation/headless_screenshot.png)
+
 Unified, zero-paywall **GNU GPL-3.0-or-later** Rust library, CLI, `Ratatui` TUI, and `eframe`/`egui` desktop/WASM GUI suite for the **[CRV Science Network](https://crvscience.com)**.
 
 ## Quick Start

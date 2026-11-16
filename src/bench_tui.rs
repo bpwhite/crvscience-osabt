@@ -1,3 +1,18 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 // Part of Open Source Ad-hoc Biology Tools (OSABT)
@@ -13,16 +28,14 @@ use std::fs;
 use std::io;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap};
 use ratatui::{Frame, Terminal};
+
+use crate::tui_util::run_tui_session_io;
 
 use crate::bench_calc::{
     build_pcr_master_mix, calc_buffer_recipe, calc_oligo_resuspension, rpm_to_rcf, BufferSystem,
@@ -176,18 +189,7 @@ impl BenchApp {
 
 /// Launches the interactive full-screen `Ratatui` application for `osabt bench`.
 pub fn run_bench_tui() -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let res = event_loop(&mut terminal);
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    res
+    run_tui_session_io(event_loop)
 }
 
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {

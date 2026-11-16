@@ -1,3 +1,18 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 // Part of Open Source Ad-hoc Biology Tools (OSABT)
@@ -10,6 +25,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::dwc_core::{dwc_term_iri, DwcDataset};
+use crate::svg_util::{begin_svg_canvas, xml_escape};
 
 /// Serializes a [`DwcDataset`] to RFC-4180 CSV (or TSV when `delimiter == '\t'`).
 /// If `exclude_error_rows` is true, rows with unresolved `ERROR` diagnostics (such as Null Island)
@@ -258,15 +274,7 @@ pub fn render_dwc_occurrence_map_svg(dataset: &DwcDataset) -> String {
         taxon_colors.entry(t.clone()).or_insert(PALETTE[next_idx]);
     }
 
-    let mut svg = String::with_capacity(8192);
-    let _ = writeln!(
-        svg,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {width:.0} {height:.0}\" width=\"{width:.0}\" height=\"{height:.0}\">"
-    );
-    let _ = writeln!(
-        svg,
-        "  <rect x=\"0\" y=\"0\" width=\"{width:.0}\" height=\"{height:.0}\" fill=\"#f8fafc\"/>"
-    );
+    let mut svg = begin_svg_canvas(8192, width, height, Some("#f8fafc"));
     let _ = writeln!(
         svg,
         "  <text x=\"24\" y=\"32\" font-family=\"sans-serif\" font-size=\"16\" font-weight=\"700\" fill=\"#0f172a\">Darwin Core Spatial QA Map — {} ({} valid points)</text>",
@@ -356,13 +364,6 @@ pub fn render_dwc_occurrence_map_svg(dataset: &DwcDataset) -> String {
     svg
 }
 
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
 
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

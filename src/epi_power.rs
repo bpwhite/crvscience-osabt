@@ -1,3 +1,18 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 // Part of Open Source Ad-hoc Biology Tools (OSABT)
@@ -10,6 +25,7 @@
 use std::fmt::Write as _;
 
 use crate::epi_models::{norm_cdf, norm_ppf, RtEstimatePoint, SeirSimulationResult};
+use crate::svg_util::{begin_svg_canvas, xml_escape};
 
 /// Supported epidemiological observational and interventional study designs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,15 +491,7 @@ pub fn render_power_curve_svg(plan: &StudyPowerPlan) -> String {
         .unwrap_or(plan.total_fleiss_cc as f64)
         .max(10.0);
 
-    let mut svg = String::with_capacity(4096);
-    let _ = writeln!(
-        svg,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {width:.0} {height:.0}\" width=\"{width:.0}\" height=\"{height:.0}\">"
-    );
-    let _ = writeln!(
-        svg,
-        "  <rect x=\"0\" y=\"0\" width=\"{width:.0}\" height=\"{height:.0}\" fill=\"#ffffff\"/>"
-    );
+    let mut svg = begin_svg_canvas(4096, width, height, Some("#ffffff"));
     let _ = writeln!(
         svg,
         "  <text x=\"{left:.0}\" y=\"28\" font-family=\"sans-serif\" font-size=\"14.5\" font-weight=\"700\" fill=\"#0f172a\">{} — {} (Required N = {})</text>",
@@ -529,13 +537,6 @@ pub fn render_power_curve_svg(plan: &StudyPowerPlan) -> String {
     svg
 }
 
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
 
 #[cfg(test)]
 mod tests {

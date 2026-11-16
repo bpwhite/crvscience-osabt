@@ -1,3 +1,18 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 // Part of Open Source Ad-hoc Biology Tools (OSABT)
@@ -14,6 +29,7 @@ use std::fmt::Write as _;
 use crate::plate_layout::{
     generate_randomized_plate, Microplate, PlatePlanConfig, WellRole,
 };
+use crate::svg_util::{begin_svg_canvas, xml_escape};
 
 /// Zhang, Chung & Oldenburg (1999) *J. Biomol. Screen.* 4:67–73 assay quality-control metrics.
 #[derive(Debug, Clone)]
@@ -404,15 +420,7 @@ pub fn render_4pl_curves_svg(title: &str, fits: &[FourParamLogisticFit]) -> Stri
     let x_span = (x_max - x_min).max(1.0);
 
     const COLORS: &[&str] = &["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#d97706"];
-    let mut svg = String::with_capacity(8192);
-    let _ = writeln!(
-        svg,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {width:.0} {height:.0}\" width=\"{width:.0}\" height=\"{height:.0}\">"
-    );
-    let _ = writeln!(
-        svg,
-        "  <rect x=\"0\" y=\"0\" width=\"{width:.0}\" height=\"{height:.0}\" fill=\"#ffffff\"/>"
-    );
+    let mut svg = begin_svg_canvas(8192, width, height, Some("#ffffff"));
     let _ = writeln!(
         svg,
         "  <text x=\"{left:.0}\" y=\"28\" font-family=\"sans-serif\" font-size=\"15\" font-weight=\"700\" fill=\"#0f172a\">{} — 4-Parameter Logistic Dose-Response</text>",
@@ -585,13 +593,6 @@ fn mean_and_sd(v: &[f64]) -> (f64, f64) {
     (m, var.sqrt())
 }
 
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
 
 #[cfg(test)]
 mod tests {

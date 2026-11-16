@@ -1,3 +1,18 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 // Part of Open Source Ad-hoc Biology Tools (OSABT)
@@ -11,6 +26,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+use crate::svg_util::{begin_svg_canvas, xml_escape};
 use crate::kinetics_core::{
     eval_inhibition_velocity, eval_morrison_velocity, GlobalInhibitionFit, KineticsPoint,
     MorrisonTightBindingFit,
@@ -57,15 +73,7 @@ pub fn render_global_inhibition_svg(
     let map_x2 = |vs: f64| p2_left + (vs / eh_x_max).clamp(0.0, 1.0) * p2_w;
 
     const COLORS: &[&str] = &["#2563eb", "#16a34a", "#d97706", "#dc2626", "#9333ea"];
-    let mut svg = String::with_capacity(16_384);
-    let _ = writeln!(
-        svg,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {width:.0} {height:.0}\" width=\"{width:.0}\" height=\"{height:.0}\">"
-    );
-    let _ = writeln!(
-        svg,
-        "  <rect x=\"0\" y=\"0\" width=\"{width:.0}\" height=\"{height:.0}\" fill=\"#ffffff\"/>"
-    );
+    let mut svg = begin_svg_canvas(16_384, width, height, Some("#ffffff"));
     let _ = writeln!(
         svg,
         "  <text x=\"{p1_left:.0}\" y=\"26\" font-family=\"sans-serif\" font-size=\"15\" font-weight=\"700\" fill=\"#0f172a\">{} — {} (AICc w = {:.1}%)</text>",
@@ -262,13 +270,6 @@ pub fn render_morrison_svg(
     svg
 }
 
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
 
 #[cfg(test)]
 mod tests {

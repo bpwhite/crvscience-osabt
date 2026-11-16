@@ -1,7 +1,23 @@
+// Copyright (C) 2026 CRV Science Network (https://crvscience.com)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://gnu.org>.
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 // Open Source Ad-hoc Biology Tools (OSABT v2.0.0) — Unified CLI, TUI & GUI Entrypoint
 
+use std::path::PathBuf;
 use std::process;
 
 use clap::{Parser, Subcommand};
@@ -35,6 +51,14 @@ use osabt::wildlife_cli::{run_wildlife_cli, WildlifeArgs};
     about = "Open Source Ad-hoc Biology Tools (OSABT v2.0.0) — 20-tool GPL-3.0 suite for the CRV Science Network"
 )]
 struct OsabtCli {
+    /// Render an offscreen 1600x1000 GPU screenshot of OSABT Flux Studio to PNG and exit.
+    #[arg(long, value_name = "PNG_PATH")]
+    screenshot: Option<PathBuf>,
+
+    /// Select which showcase view to capture (1 = Dual Overview, 2 = Survival & Ecotox, 3 = Kinetics & Plasmid).
+    #[arg(long, value_name = "VIEW", default_value_t = 1)]
+    screenshot_view: u8,
+
     #[command(subcommand)]
     tool: Option<OsabtTool>,
 }
@@ -100,10 +124,45 @@ enum OsabtTool {
 
     /// Tool #20: Leaf `FvCB` photosynthesis ($A\text{–}C_i$) & Odum (1956) open-channel stream `GPP`/`ER` metabolism studio (CLI + egui GUI).
     Flux(FluxArgs),
+
+    /// Launch OSABT Flux Studio GUI (or capture `--screenshot <PNG_PATH>` headlessly).
+    Gui {
+        /// Optional Leaf A-Ci CSV file path.
+        #[arg(long)]
+        aci: Option<PathBuf>,
+        /// Optional Odum open-channel stream DO CSV file path.
+        #[arg(long)]
+        stream: Option<PathBuf>,
+        /// Render an offscreen 1600x1000 GPU screenshot to PNG and exit without opening a window.
+        #[arg(long, value_name = "PNG_PATH")]
+        screenshot: Option<PathBuf>,
+
+        /// Select which showcase view to capture (1 = Dual Overview, 2 = Survival & Ecotox, 3 = Kinetics & Plasmid).
+        #[arg(long, value_name = "VIEW", default_value_t = 1)]
+        screenshot_view: u8,
+    },
 }
 
 fn main() {
     let cli = OsabtCli::parse();
+    if let Some(out_path) = cli.screenshot {
+        #[cfg(feature = "gui")]
+        {
+            if let Err(err) =
+            osabt::flux_gui::run_flux_screenshot(None, None, &out_path, cli.screenshot_view)
+        {
+                eprintln!("Error: {err}");
+                process::exit(1);
+            }
+            return;
+        }
+        #[cfg(not(feature = "gui"))]
+        {
+            let _ = out_path;
+            eprintln!("Error: --screenshot requires building with `--features gui`.");
+            process::exit(1);
+        }
+    }
     let result = match cli.tool {
         Some(OsabtTool::Bench(args)) => run_bench_cli(args),
         Some(OsabtTool::Plasmid(args)) => run_plasmid_cli(args),
@@ -125,6 +184,26 @@ fn main() {
         Some(OsabtTool::Flow(args)) => run_flow_cli(args),
         Some(OsabtTool::Survival(args)) => run_survival_cli(args),
         Some(OsabtTool::Flux(args)) => run_flux_cli(args),
+        Some(OsabtTool::Gui {
+            aci,
+            stream,
+            screenshot,
+            screenshot_view,
+        }) => {
+            #[cfg(feature = "gui")]
+            {
+                if let Some(out_path) = screenshot {
+                    osabt::flux_gui::run_flux_screenshot(aci, stream, &out_path, screenshot_view)
+                } else {
+                    osabt::flux_gui::run_flux_gui(aci, stream)
+                }
+            }
+            #[cfg(not(feature = "gui"))]
+            {
+                let _ = (aci, stream, screenshot, screenshot_view);
+                Err("Built without `gui` feature; rebuild with `--features gui`.".to_string())
+            }
+        }
         None => run_bench_cli(BenchArgs { command: None }),
     };
 
