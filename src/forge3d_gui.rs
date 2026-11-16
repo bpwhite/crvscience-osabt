@@ -159,6 +159,13 @@ pub fn run_forge3d_gui(initial_pdb: Option<PathBuf>) -> Result<(), String> {
 
 impl eframe::App for Forge3dStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw_panels(ctx);
+    }
+}
+
+impl Forge3dStudioApp {
+    /// Renders all Forge3D Studio panels onto `ctx`.
+    pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("forge3d_status").show(ctx, |ui| {
             ui.label(&self.status_bar);
         });

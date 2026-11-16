@@ -60,7 +60,7 @@ pub fn run_popgen_gui(
     .map_err(|e| format!("Failed launching egui PopGen Studio: {e}"))
 }
 
-struct PopGenGuiApp {
+pub struct PopGenGuiApp {
     view: PopGenView,
     fasta_text: String,
     vcf_text: String,
@@ -73,7 +73,7 @@ struct PopGenGuiApp {
 }
 
 impl PopGenGuiApp {
-    fn new(fasta_path: Option<PathBuf>, vcf_path: Option<PathBuf>) -> Result<Self, String> {
+    pub fn new(fasta_path: Option<PathBuf>, vcf_path: Option<PathBuf>) -> Result<Self, String> {
         let fasta_text = if let Some(fp) = fasta_path {
             fs::read_to_string(&fp)
                 .map_err(|e| format!("Failed reading FASTA '{}': {e}", fp.display()))?
@@ -136,6 +136,13 @@ impl PopGenGuiApp {
 
 impl eframe::App for PopGenGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw_panels(ctx);
+    }
+}
+
+impl PopGenGuiApp {
+    /// Renders all PopGen Studio panels onto `ctx`.
+    pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("popgen_top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("OSABT PopGen v1.6.0");

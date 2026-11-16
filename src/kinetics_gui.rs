@@ -202,6 +202,13 @@ pub fn run_kinetics_gui(initial_csv: Option<PathBuf>) -> Result<(), String> {
 
 impl eframe::App for KineticsStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw_panels(ctx);
+    }
+}
+
+impl KineticsStudioApp {
+    /// Renders all Kinetics Studio panels onto `ctx`.
+    pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("kinetics_top").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("⚗ OSABT Kinetics");

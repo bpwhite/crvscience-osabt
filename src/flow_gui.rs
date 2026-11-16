@@ -48,7 +48,7 @@ pub fn run_flow_gui(fcs_path: Option<PathBuf>) -> Result<(), String> {
     .map_err(|e| format!("Failed launching egui Flow Studio: {e}"))
 }
 
-struct FlowGuiApp {
+pub struct FlowGuiApp {
     raw_ds: FcsDataset,
     comp_ds: Option<FcsDataset>,
     apply_compensation: bool,
@@ -64,7 +64,7 @@ struct FlowGuiApp {
 }
 
 impl FlowGuiApp {
-    fn new(fcs_path: Option<PathBuf>) -> Result<Self, String> {
+    pub fn new(fcs_path: Option<PathBuf>) -> Result<Self, String> {
         let bytes = if let Some(fp) = fcs_path {
             fs::read(&fp)
                 .map_err(|e| format!("Failed reading FCS file '{}': {e}", fp.display()))?
@@ -152,6 +152,13 @@ impl FlowGuiApp {
 
 impl eframe::App for FlowGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw_panels(ctx);
+    }
+}
+
+impl FlowGuiApp {
+    /// Renders all Flow Cytometry Studio panels onto `ctx`.
+    pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("flow_top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("OSABT Flow v1.8.0");

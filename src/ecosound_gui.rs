@@ -273,6 +273,13 @@ pub fn run_ecosound_gui(initial_wav: Option<PathBuf>) -> Result<(), String> {
 
 impl eframe::App for EcosoundStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw_panels(ctx);
+    }
+}
+
+impl EcosoundStudioApp {
+    /// Renders all EcoSound Studio panels onto `ctx`.
+    pub fn draw_panels(&mut self, ctx: &egui::Context) {
         self.ensure_spectrogram_texture(ctx);
 
         egui::TopBottomPanel::top("ecosound_top_bar").show(ctx, |ui| {

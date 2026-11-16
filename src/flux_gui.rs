@@ -100,7 +100,7 @@ pub fn run_flux_gui(aci_path: Option<PathBuf>, stream_path: Option<PathBuf>) -> 
     .map_err(|e| format!("Failed launching egui Flux Studio: {e}"))
 }
 
-struct FluxGuiApp {
+pub struct FluxGuiApp {
     view: FluxView,
     aci_pts: Vec<LeafAciPoint>,
     aci_fit: FvcbAciFit,
@@ -123,7 +123,7 @@ struct FluxGuiApp {
 }
 
 impl FluxGuiApp {
-    fn new(aci_path: Option<PathBuf>, stream_path: Option<PathBuf>) -> Result<Self, String> {
+    pub fn new(aci_path: Option<PathBuf>, stream_path: Option<PathBuf>) -> Result<Self, String> {
         let aci_raw = if let Some(ap) = aci_path {
             fs::read_to_string(&ap)
                 .map_err(|e| format!("Failed reading A-Ci CSV '{}': {e}", ap.display()))?
@@ -229,7 +229,13 @@ impl eframe::App for FluxGuiApp {
 }
 
 impl FluxGuiApp {
-    fn draw_panels(&mut self, ctx: &egui::Context) {
+    /// Selects the dual Leaf FvCB + Odum Stream Metabolism overview tab.
+    pub fn set_dual_overview(&mut self) {
+        self.view = FluxView::DualOverview;
+    }
+
+    /// Renders all Flux Studio panels onto `ctx`.
+    pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("flux_top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("OSABT Flux v2.0.0");
@@ -1641,7 +1647,7 @@ fn block_on_wgpu<F: std::future::Future>(fut: F) -> F::Output {
     }
 }
 
-fn render_flux_offscreen_png(
+pub(crate) fn render_flux_offscreen_png(
     ctx: &egui::Context,
     out_path: &std::path::Path,
     mut draw_ui: impl FnMut(&egui::Context),

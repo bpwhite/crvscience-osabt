@@ -189,6 +189,13 @@ pub fn run_morpho_gui(initial_file: Option<PathBuf>) -> Result<(), String> {
 
 impl eframe::App for MorphoStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw_panels(ctx);
+    }
+}
+
+impl MorphoStudioApp {
+    /// Renders all Morpho Studio panels onto `ctx`.
+    pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("morpho_top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui

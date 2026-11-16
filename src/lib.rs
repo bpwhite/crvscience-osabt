@@ -221,6 +221,9 @@ pub mod plasmid_gui;
 #[cfg(feature = "gui")]
 pub mod popgen_gui;
 
+#[cfg(feature = "gui")]
+pub mod workbench_gui;
+
 pub use bench_calc::*;
 pub use crispr_core::*;
 pub use crispr_offtarget::*;

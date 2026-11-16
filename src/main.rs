@@ -51,11 +51,15 @@ use osabt::wildlife_cli::{run_wildlife_cli, WildlifeArgs};
     about = "Open Source Ad-hoc Biology Tools (OSABT v2.0.0) — 20-tool GPL-3.0 suite for the CRV Science Network"
 )]
 struct OsabtCli {
-    /// Render an offscreen 1600x1000 GPU screenshot of OSABT Flux Studio to PNG and exit.
-    #[arg(long, value_name = "PNG_PATH")]
+    /// Launch the interactive Ratatui terminal workbench (Tool #1) instead of the desktop GUI.
+    #[arg(long)]
+    tui: bool,
+
+    /// Render an offscreen 1600x1000 GPU screenshot of OSABT Workbench GUI to PNG and exit.
+    #[arg(long, visible_alias = "headless-screenshot", value_name = "PNG_PATH")]
     screenshot: Option<PathBuf>,
 
-    /// Select which showcase view to capture (1 = Dual Overview, 2 = Survival & Ecotox, 3 = Kinetics & Plasmid).
+    /// Select which showcase view to capture (1 = Suite Launcher, 2 = Survival & Ecotox, 3 = Plasmid Studio).
     #[arg(long, value_name = "VIEW", default_value_t = 1)]
     screenshot_view: u8,
 
@@ -149,8 +153,8 @@ fn main() {
         #[cfg(feature = "gui")]
         {
             if let Err(err) =
-            osabt::flux_gui::run_flux_screenshot(None, None, &out_path, cli.screenshot_view)
-        {
+                osabt::workbench_gui::run_workbench_screenshot(&out_path, cli.screenshot_view)
+            {
                 eprintln!("Error: {err}");
                 process::exit(1);
             }
@@ -204,7 +208,20 @@ fn main() {
                 Err("Built without `gui` feature; rebuild with `--features gui`.".to_string())
             }
         }
-        None => run_bench_cli(BenchArgs { command: None }),
+        None => {
+            if cli.tui {
+                run_bench_cli(BenchArgs { command: None })
+            } else {
+                #[cfg(feature = "gui")]
+                {
+                    osabt::workbench_gui::run_workbench_gui()
+                }
+                #[cfg(not(feature = "gui"))]
+                {
+                    run_bench_cli(BenchArgs { command: None })
+                }
+            }
+        }
     };
 
     if let Err(err) = result {

@@ -160,6 +160,13 @@ pub fn run_plasmid_gui(initial_file: Option<PathBuf>) -> Result<(), String> {
 
 impl eframe::App for PlasmidStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw_panels(ctx);
+    }
+}
+
+impl PlasmidStudioApp {
+    /// Renders all Plasmid Studio panels onto `ctx`.
+    pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("plasmid_top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(format!(
