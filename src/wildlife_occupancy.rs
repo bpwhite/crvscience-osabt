@@ -150,7 +150,7 @@ pub fn parse_occupancy_csv(raw_csv: &str) -> Result<Vec<SiteDetectionRow>, Strin
     let mut header_has_cov = false;
     let mut expected_cols: Option<usize> = None;
 
-    for (line_idx, line) in raw_csv.lines().enumerate() {
+    for (line_idx, line) in raw_csv.trim_start_matches('\u{feff}').lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;

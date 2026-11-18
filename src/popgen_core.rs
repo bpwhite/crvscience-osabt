@@ -155,7 +155,7 @@ pub fn parse_popgen_fasta(raw_fasta: &str) -> Result<Vec<PopSequenceRecord>, Str
         }
     };
 
-    for line in raw_fasta.lines() {
+    for line in raw_fasta.trim_start_matches('\u{feff}').lines() {
         let t = line.trim();
         if t.is_empty() || t.starts_with(';') {
             continue;
@@ -489,7 +489,7 @@ pub fn parse_popgen_vcf(raw_vcf: &str) -> Result<(Vec<String>, Vec<DiploidSnpLoc
     let mut sample_pops: Vec<String> = Vec::new();
     let mut loci: Vec<DiploidSnpLocus> = Vec::new();
 
-    for (line_idx, line) in raw_vcf.lines().enumerate() {
+    for (line_idx, line) in raw_vcf.trim_start_matches('\u{feff}').lines().enumerate() {
         let t = line.trim();
         if t.is_empty() || t.starts_with("##") {
             continue;

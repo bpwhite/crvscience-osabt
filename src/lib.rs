@@ -198,6 +198,9 @@ pub mod survival_tui;
 pub mod wildlife_tui;
 
 #[cfg(feature = "gui")]
+pub mod brand;
+
+#[cfg(feature = "gui")]
 pub mod ecosound_gui;
 
 #[cfg(feature = "gui")]
@@ -208,6 +211,9 @@ pub mod flux_gui;
 
 #[cfg(feature = "gui")]
 pub mod forge3d_gui;
+
+#[cfg(feature = "gui")]
+pub mod gui_io;
 
 #[cfg(feature = "gui")]
 pub mod kinetics_gui;
@@ -317,6 +323,7 @@ impl std::error::Error for OligoError {}
 
 /// Strips whitespace/digits, converts RNA `U -> T`, uppercases, and validates IUPAC DNA characters.
 pub fn normalize_dna(raw: &str) -> Result<String, OligoError> {
+    let raw = raw.trim_start_matches('\u{feff}');
     let mut out = String::with_capacity(raw.len());
     for (pos, ch) in raw.chars().enumerate() {
         if ch.is_ascii_whitespace() || ch.is_ascii_digit() || ch == '-' || ch == '_' {
@@ -479,5 +486,29 @@ mod tests {
         let do_pts = parse_stream_do_csv(&demo_stream_diel_do_csv()).unwrap();
         let stream = fit_odum_stream_metabolism(&do_pts).unwrap();
         assert!(stream.gpp_g_o2_m2_d > 2.0);
+    }
+
+    #[test]
+    fn strips_utf8_bom_across_all_text_and_sequence_parsers() {
+        let bom = |s: &str| format!("\u{feff}{s}");
+        assert_eq!(normalize_dna(&bom("acgt")).unwrap(), "ACGT");
+        assert!(!parse_qpcr_table(&bom(demo_qpcr_heatshock_plate_csv())).unwrap().is_empty());
+        assert!(!parse_melt_csv(&bom("well,sample,target,temperature_c,fluorescence\nA1,S1,G1,70,1000\nA1,S1,G1,80,500\nA1,S1,G1,90,100\n")).unwrap().is_empty());
+        let (fq, bc, _) = demo_pnw_12s_edna_dataset();
+        assert!(!parse_fastq_str(&bom(&fq)).unwrap().is_empty());
+        assert!(!parse_barcode_sheet_csv(&bom(&bc)).unwrap().is_empty());
+        assert!(!parse_occupancy_csv(&bom(demo_pnw_occupancy_csv())).unwrap().is_empty());
+        assert!(!parse_capture_history_csv(&bom(demo_pnw_capture_history_csv())).unwrap().0.is_empty());
+        assert!(!parse_survival_csv(&bom(demo_survival_cohort_csv())).unwrap().is_empty());
+        assert!(!parse_kinetics_csv(&bom(demo_competitive_kinase_matrix_csv())).unwrap().is_empty());
+        assert!(!parse_popgen_fasta(&bom(&demo_pnw_popgen_fasta())).unwrap().is_empty());
+        assert!(!parse_popgen_vcf(&bom(demo_pnw_popgen_vcf())).unwrap().1.is_empty());
+        let (tgt, _) = demo_crispr_target_and_offtargets();
+        assert!(!scan_crispr_candidates(&bom(&tgt), CrisprNuclease::SpCas9).unwrap().1.is_empty());
+        assert!(!parse_tps_landmarks(&bom(demo_salmonid_landmarks_tps())).unwrap().is_empty());
+        assert!(!parse_aci_csv(&bom(&demo_fvcb_aci_csv())).unwrap().is_empty());
+        assert!(!parse_stream_do_csv(&bom(&demo_stream_diel_do_csv())).unwrap().is_empty());
+        assert!(parse_fasta_alignment("BomAln", &bom(demo_ecoli_promoter_and_stemloop_fasta())).is_ok());
+        assert!(parse_newick("BomTree", &bom("(A:0.1,B:0.2);")).is_ok());
     }
 }

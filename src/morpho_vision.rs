@@ -292,6 +292,9 @@ fn parse_pnm_rgb(bytes: &[u8]) -> Result<RgbImage, String> {
     let maxval: u32 = next_token(bytes, &mut idx)
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| String::from("Invalid PNM maxval."))?;
+    if width == 0 || height == 0 {
+        return Err(String::from("PNM width and height must be > 0."));
+    }
     if maxval == 0 {
         return Err(String::from("PNM maxval must be > 0."));
     }

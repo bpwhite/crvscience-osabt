@@ -214,10 +214,12 @@ pub fn load_plasmid_bytes(filename_hint: &str, bytes: &[u8]) -> Result<PlasmidRe
         return parse_snapgene_dna(bytes);
     }
 
-    let text = std::str::from_utf8(bytes).map_err(|_| OligoError::InvalidBase {
-        byte: '?',
-        pos: 0,
-    })?;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| OligoError::InvalidBase {
+            byte: '?',
+            pos: 0,
+        })?
+        .trim_start_matches('\u{feff}');
     let trimmed = text.trim_start();
     if trimmed.starts_with("LOCUS") || filename_hint.ends_with(".gb") || filename_hint.ends_with(".gbk") {
         if trimmed.starts_with("LOCUS") {
@@ -253,7 +255,7 @@ pub fn parse_genbank(text: &str) -> Result<PlasmidRecord, OligoError> {
     }
     let mut sec = Section::Header;
 
-    for raw_line in text.lines() {
+    for raw_line in text.trim_start_matches('\u{feff}').lines() {
         if raw_line.starts_with("//") {
             break;
         }
@@ -1001,5 +1003,14 @@ mod tests {
         assert!(sg_rec.circular);
         assert_eq!(sg_rec.sequence, "ATGAAAGGGCCCTTTAA");
         assert_eq!(sg_rec.features[0].name, "MiniORF");
+
+        // UTF-8 BOM-prefixed GenBank & FASTA inputs parse cleanly
+        let bom_gbk = format!("\u{feff}{gbk}");
+        let parsed_bom_gbk = load_plasmid_bytes("bom.gbk", bom_gbk.as_bytes()).unwrap();
+        assert_eq!(parsed_bom_gbk.name, "pCRV_DemoGFP");
+        let bom_fa = "\u{feff}>BOM_Vec\nATGCGTACGTACGT\n";
+        let parsed_bom_fa = load_plasmid_bytes("bom.fa", bom_fa.as_bytes()).unwrap();
+        assert_eq!(parsed_bom_fa.name, "BOM_Vec");
+        assert_eq!(parsed_bom_fa.sequence, "ATGCGTACGTACGT");
     }
 }

@@ -773,6 +773,36 @@ pub fn rogan_gladen_prevalence(
     })
 }
 
+/// Parses daily case counts from whitespace, comma, or multi-column CSV text (uses last numeric column per row).
+pub fn parse_incidence_series(raw: &str) -> Result<Vec<f64>, String> {
+    let mut vals = Vec::new();
+    for (line_idx, line) in raw.trim_start_matches('\u{feff}').lines().enumerate() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let tokens: Vec<&str> = t.split([',', '\t', ';', ' ']).filter(|s| !s.is_empty()).collect();
+        if let Some(last) = tokens.last() {
+            if let Ok(v) = last.parse::<f64>() {
+                if !v.is_finite() || v < 0.0 {
+                    return Err(format!(
+                        "Incidence line {}: invalid negative or non-finite count '{}'.",
+                        line_idx + 1,
+                        last
+                    ));
+                }
+                vals.push(v);
+            }
+        }
+    }
+    if vals.len() < 3 {
+        return Err(String::from(
+            "Could not parse >= 3 non-negative daily incidence counts from input file.",
+        ));
+    }
+    Ok(vals)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,5 +825,10 @@ mod tests {
         // Rogan-Gladen: 140/1000 apparent (14%), Se=0.90, Sp=0.95 -> (0.14 + 0.95 - 1)/0.85 = 0.09/0.85 = 0.105882
         let rg = rogan_gladen_prevalence(140, 1000, 0.90, 0.95).unwrap();
         assert!((rg.true_prevalence - (0.09 / 0.85)).abs() < 1e-6);
+
+        // Reject negative / non-finite incidence counts and accept BOM-prefixed series
+        assert!(parse_incidence_series("day,cases\n1,-5\n2,10\n3,15\n4,20").is_err());
+        assert!(parse_incidence_series("1,NaN\n2,10\n3,15\n4,20").is_err());
+        assert_eq!(parse_incidence_series("\u{feff}12\n15\n18").unwrap(), vec![12.0, 15.0, 18.0]);
     }
 }

@@ -17,6 +17,9 @@
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 // Open Source Ad-hoc Biology Tools (OSABT v2.0.0) — Unified CLI, TUI & GUI Entrypoint
 
+#![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
+
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process;
 
@@ -147,7 +150,30 @@ enum OsabtTool {
     },
 }
 
+#[cfg(windows)]
+fn attach_parent_console_if_cli() {
+    if std::env::args_os().len() > 1 {
+        extern "system" {
+            fn AttachConsole(dwProcessId: u32) -> i32;
+        }
+        const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+        // SAFETY: Win32 AttachConsole(ATTACH_PARENT_PROCESS) attaches stdout/stderr to the invoking
+        // console when CLI arguments are passed to a `windows_subsystem = "windows"` binary.
+        unsafe {
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
+fn flush_std_streams() {
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+}
+
 fn main() {
+    #[cfg(windows)]
+    attach_parent_console_if_cli();
+
     let cli = OsabtCli::parse();
     if let Some(out_path) = cli.screenshot {
         #[cfg(feature = "gui")]
@@ -156,14 +182,17 @@ fn main() {
                 osabt::workbench_gui::run_workbench_screenshot(&out_path, cli.screenshot_view)
             {
                 eprintln!("Error: {err}");
+                flush_std_streams();
                 process::exit(1);
             }
+            flush_std_streams();
             return;
         }
         #[cfg(not(feature = "gui"))]
         {
             let _ = out_path;
             eprintln!("Error: --screenshot requires building with `--features gui`.");
+            flush_std_streams();
             process::exit(1);
         }
     }
@@ -226,6 +255,8 @@ fn main() {
 
     if let Err(err) = result {
         eprintln!("osabt error: {err}");
+        flush_std_streams();
         process::exit(1);
     }
+    flush_std_streams();
 }

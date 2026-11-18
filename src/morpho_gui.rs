@@ -21,12 +21,15 @@
 //! Integrates automated Petri CFU counting (with manual click curation), Excess-Green leaf
 //! herbivory thresholding, and interactive `tpsDig`-style 2D homologous landmarking + live GPA.
 
-use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use egui::{Color32, ColorImage, Pos2, Sense, Shape, Stroke, TextureHandle, TextureOptions, Vec2};
 
+use crate::gui_io::{
+    draw_status_banner, pick_open_file, pick_save_file, read_bytes_reported, read_text_reported,
+    write_text_reported,
+};
 use crate::morpho_gpa::{
     demo_salmonid_landmarks_tps, parse_tps_landmarks, render_gpa_morphospace_svg,
     run_generalized_procrustes_2d, write_tps_landmarks, LandmarkSpecimen2D,
@@ -64,6 +67,8 @@ pub struct MorphoStudioApp {
     specimens: Vec<LandmarkSpecimen2D>,
     active_specimen_idx: usize,
     status_bar: String,
+    status_is_error: bool,
+    about_open: bool,
 }
 
 impl MorphoStudioApp {
@@ -98,6 +103,8 @@ impl MorphoStudioApp {
             status_bar: String::from(
                 "Left-click Petri dish to add missed colony, right-click to remove false positive | Switch tabs for Leaf Herbivory & 2D GPA Landmarks.",
             ),
+            status_is_error: false,
+            about_open: false,
         };
 
         if let Some(p) = initial_file {
@@ -106,26 +113,29 @@ impl MorphoStudioApp {
         app
     }
 
-    fn load_from_path(&mut self, path: &PathBuf) {
+    fn load_from_path(&mut self, path: &Path) {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
         if ext == "tps" {
-            match fs::read_to_string(path).and_then(|s| {
-                parse_tps_landmarks(&s)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-            }) {
-                Ok(sp) => {
-                    self.specimens = sp;
-                    self.active_specimen_idx = 0;
-                    self.mode = MorphoMode::LandmarksGpa;
-                    self.status_bar = format!("Loaded {} specimens from '{}'.", self.specimens.len(), path.display());
+            if let Some(s) = read_text_reported(path, &mut self.status_bar, &mut self.status_is_error) {
+                match parse_tps_landmarks(&s) {
+                    Ok(sp) => {
+                        self.specimens = sp;
+                        self.active_specimen_idx = 0;
+                        self.mode = MorphoMode::LandmarksGpa;
+                        self.status_is_error = false;
+                        self.status_bar = format!("Loaded {} specimens from '{}'.", self.specimens.len(), path.display());
+                    }
+                    Err(e) => {
+                        self.status_is_error = true;
+                        self.status_bar = format!("TPS load error: {e}");
+                    }
                 }
-                Err(e) => self.status_bar = format!("TPS load error: {e}"),
             }
-        } else if let Ok(bytes) = fs::read(path) {
+        } else if let Some(bytes) = read_bytes_reported(path, &mut self.status_bar, &mut self.status_is_error) {
             match RgbImage::from_bytes(&bytes) {
                 Ok(img) => {
                     if self.mode == MorphoMode::LeafHerbivory {
@@ -135,9 +145,13 @@ impl MorphoStudioApp {
                         self.recompute_cfu();
                     }
                     self.texture_dirty = true;
+                    self.status_is_error = false;
                     self.status_bar = format!("Loaded image '{}'.", path.display());
                 }
-                Err(e) => self.status_bar = format!("Image parse error: {e}"),
+                Err(e) => {
+                    self.status_is_error = true;
+                    self.status_bar = format!("Image parse error: {e}");
+                }
             }
         }
     }
@@ -176,6 +190,7 @@ pub fn run_morpho_gui(initial_file: Option<PathBuf>) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 780.0])
+            .with_icon(crate::brand::osabt_icon_data())
             .with_title("OSABT Morpho — Colony Counter, Leaf Herbivory & 2D GPA Studio (GPL-3.0)"),
         ..Default::default()
     };
@@ -189,6 +204,7 @@ pub fn run_morpho_gui(initial_file: Option<PathBuf>) -> Result<(), String> {
 
 impl eframe::App for MorphoStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::brand::draw_standalone_footer(ctx, &mut self.about_open);
         self.draw_panels(ctx);
     }
 }
@@ -197,9 +213,9 @@ impl MorphoStudioApp {
     /// Renders all Morpho Studio panels onto `ctx`.
     pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("morpho_top").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui
-                    .selectable_label(self.mode == MorphoMode::PetriCfu, "🦠 Petri CFU Counter")
+                    .selectable_label(self.mode == MorphoMode::PetriCfu, "Petri CFU Counter")
                     .clicked()
                 {
                     self.mode = MorphoMode::PetriCfu;
@@ -208,7 +224,7 @@ impl MorphoStudioApp {
                 if ui
                     .selectable_label(
                         self.mode == MorphoMode::LeafHerbivory,
-                        "🌿 Leaf Area & Herbivory",
+                        "Leaf Area & Herbivory",
                     )
                     .clicked()
                 {
@@ -218,7 +234,7 @@ impl MorphoStudioApp {
                 if ui
                     .selectable_label(
                         self.mode == MorphoMode::LandmarksGpa,
-                        "📐 2D Landmarks & Procrustes GPA",
+                        "2D Landmarks & Procrustes GPA",
                     )
                     .clicked()
                 {
@@ -226,7 +242,13 @@ impl MorphoStudioApp {
                 }
                 ui.separator();
                 ui.label("Load (.bmp/.ppm/.tps):");
-                ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(220.0));
+                ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(180.0));
+                if ui.button("Browse...").clicked() {
+                    if let Some(p) = pick_open_file("Open Morpho Image or TPS", "Image / TPS", &["bmp", "ppm", "tps"]) {
+                        self.path_input = p.to_string_lossy().to_string();
+                        self.load_from_path(&p);
+                    }
+                }
                 if ui.button("Open").clicked() && !self.path_input.trim().is_empty() {
                     let p = PathBuf::from(self.path_input.trim());
                     self.load_from_path(&p);
@@ -235,7 +257,7 @@ impl MorphoStudioApp {
         });
 
         egui::TopBottomPanel::bottom("morpho_bot").show(ctx, |ui| {
-            ui.label(&self.status_bar);
+            draw_status_banner(ui, &self.status_bar, self.status_is_error);
         });
 
         egui::SidePanel::left("morpho_side")
@@ -300,9 +322,15 @@ impl MorphoStudioApp {
         }
 
         if ui.button("Export Annotated CFU .svg").clicked() {
-            let svg = render_petri_cfu_svg(&self.petri_img, &self.cfu_report);
-            if fs::write("petri_cfu_annotated.svg", svg).is_ok() {
-                self.status_bar = String::from("Saved ./petri_cfu_annotated.svg");
+            if let Some(path) = pick_save_file("Export Annotated CFU SVG", "petri_cfu_annotated.svg", "SVG Image", &["svg"]) {
+                let svg = render_petri_cfu_svg(&self.petri_img, &self.cfu_report);
+                write_text_reported(
+                    &path,
+                    &svg,
+                    &mut self.status_bar,
+                    &mut self.status_is_error,
+                    "Saved Annotated CFU SVG",
+                );
             }
         }
     }
@@ -377,7 +405,7 @@ impl MorphoStudioApp {
                     .iter()
                     .enumerate()
                     .map(|(i, c)| (i, (c.x_px - ix).powi(2) + (c.y_px - iy).powi(2)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                 {
                     self.cfu_report.colonies.remove(best_i);
                     self.cfu_report.total_cfu_count = self.cfu_report.colonies.len();
@@ -460,16 +488,25 @@ impl MorphoStudioApp {
 
             ui.horizontal(|ui| {
                 if ui.button("Export .tps").clicked() {
-                    if fs::write("osabt_landmarks.tps", write_tps_landmarks(&self.specimens)).is_ok()
-                    {
-                        self.status_bar = String::from("Saved ./osabt_landmarks.tps");
+                    if let Some(path) = pick_save_file("Export Landmarks TPS", "osabt_landmarks.tps", "TPS Landmarks", &["tps"]) {
+                        write_text_reported(
+                            &path,
+                            &write_tps_landmarks(&self.specimens),
+                            &mut self.status_bar,
+                            &mut self.status_is_error,
+                            "Saved TPS Landmarks",
+                        );
                     }
                 }
                 if ui.button("Export GPA+PCA .svg").clicked() {
-                    if fs::write("osabt_gpa_morphospace.svg", render_gpa_morphospace_svg(&gpa))
-                        .is_ok()
-                    {
-                        self.status_bar = String::from("Saved ./osabt_gpa_morphospace.svg");
+                    if let Some(path) = pick_save_file("Export GPA Morphospace SVG", "osabt_gpa_morphospace.svg", "SVG Image", &["svg"]) {
+                        write_text_reported(
+                            &path,
+                            &render_gpa_morphospace_svg(&gpa),
+                            &mut self.status_bar,
+                            &mut self.status_is_error,
+                            "Saved GPA+PCA SVG",
+                        );
                     }
                 }
             });
@@ -507,6 +544,32 @@ impl MorphoStudioApp {
                 cons_pts,
                 Stroke::new(2.2_f32, Color32::from_rgb(248, 113, 113)),
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cycles_all_morpho_modes_headlessly() {
+        let ctx = egui::Context::default();
+        let mut app = MorphoStudioApp::new(None);
+        for mode in [
+            MorphoMode::PetriCfu,
+            MorphoMode::LeafHerbivory,
+            MorphoMode::LandmarksGpa,
+        ] {
+            app.mode = mode;
+            app.texture_dirty = true;
+            for frame in 0..2 {
+                let mut raw = egui::RawInput::default();
+                raw.screen_rect = Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0)));
+                raw.time = Some(frame as f64 / 60.0);
+                let out = ctx.run(raw, |c| app.draw_panels(c));
+                assert!(!out.shapes.is_empty());
+            }
         }
     }
 }

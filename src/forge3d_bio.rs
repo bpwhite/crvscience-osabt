@@ -73,7 +73,7 @@ pub fn bondi_vdw_radius(element: &str) -> f32 {
 /// Reads only the first NMR `MODEL` if multiple models are present.
 pub fn parse_pdb_atoms(pdb_text: &str, include_hetatm: bool) -> Result<Vec<PdbAtom>, String> {
     let mut atoms = Vec::new();
-    for line in pdb_text.lines() {
+    for line in pdb_text.trim_start_matches('\u{feff}').lines() {
         if line.starts_with("ENDMDL") && !atoms.is_empty() {
             break;
         }
@@ -461,7 +461,7 @@ pub fn crv_voxel_csv_to_mesh(
     let mut samples: Vec<(usize, usize, usize, f32)> = Vec::new();
     let (mut mx, mut my, mut mz) = (0usize, 0usize, 0usize);
 
-    for line in voxel_csv.lines() {
+    for line in voxel_csv.trim_start_matches('\u{feff}').lines() {
         let t = line.trim();
         if t.is_empty()
             || t.starts_with('#')

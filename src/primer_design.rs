@@ -174,7 +174,7 @@ impl MultiplexPoolPlan {
 /// Parses a multi-FASTA text buffer into `(record_id, normalized_sequence)` pairs.
 /// Also accepts raw unheaded DNA strings as a single `"Template_1"` record.
 pub fn parse_fasta_or_raw(input: &str) -> Result<Vec<(String, String)>, OligoError> {
-    let trimmed = input.trim();
+    let trimmed = input.trim_start_matches('\u{feff}').trim();
     if trimmed.is_empty() {
         return Err(OligoError::EmptySequence);
     }
@@ -723,5 +723,11 @@ mod tests {
         let probe = top.qpcr_probe.as_ref().expect("Expected internal TaqMan probe");
         assert!(!probe.sequence.starts_with('G'));
         assert!(probe.tm_c > top.fwd.tm_c);
+
+        // UTF-8 BOM-prefixed FASTA and raw DNA parse cleanly
+        let bom_fa = parse_fasta_or_raw("\u{feff}>BomSeq\nACGTACGTACGT\n").unwrap();
+        assert_eq!(bom_fa, vec![(String::from("BomSeq"), String::from("ACGTACGTACGT"))]);
+        let bom_raw = parse_fasta_or_raw("\u{feff}acgtacgt").unwrap();
+        assert_eq!(bom_raw, vec![(String::from("Template_1"), String::from("ACGTACGT"))]);
     }
 }

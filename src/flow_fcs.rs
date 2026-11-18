@@ -114,6 +114,9 @@ pub fn parse_fcs_bytes(bytes: &[u8]) -> Result<FcsDataset, String> {
         .trim()
         .parse()
         .map_err(|_| String::from("Invalid $PAR integer in FCS TEXT segment."))?;
+    if par == 0 {
+        return Err(String::from("FCS TEXT segment has $PAR = 0 (no channels)."));
+    }
     let tot: usize = keywords
         .get("$TOT")
         .ok_or_else(|| String::from("FCS TEXT segment missing required $TOT keyword."))?

@@ -21,9 +21,14 @@
 //! Metabolism Studio (`osabt flux`).
 
 use std::fs;
+use std::io::BufWriter;
 use std::path::PathBuf;
 
 use eframe::egui;
+
+use crate::gui_io::{
+    draw_status_banner, pick_open_file, pick_save_file, read_text_reported, write_text_reported,
+};
 
 use crate::flux_leaf::{
     demo_fvcb_aci_csv, eval_fvcb_assimilation, fit_fvcb_aci_curve, parse_aci_csv, FvcbAciFit,
@@ -88,6 +93,7 @@ pub fn run_flux_gui(aci_path: Option<PathBuf>, stream_path: Option<PathBuf>) -> 
     let app = FluxGuiApp::new(aci_path, stream_path)?;
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(crate::brand::osabt_icon_data())
             .with_title("OSABT Flux Studio (v2.0.0) — FvCB Leaf Photosynthesis & Odum Stream Metabolism")
             .with_inner_size([1140.0, 720.0]),
         ..Default::default()
@@ -120,6 +126,8 @@ pub struct FluxGuiApp {
     digest_enzymes: Vec<String>,
     digest_frags: Vec<DigestFragment>,
     status_msg: String,
+    status_is_error: bool,
+    about_open: bool,
 }
 
 impl FluxGuiApp {
@@ -218,12 +226,15 @@ impl FluxGuiApp {
             digest_enzymes,
             digest_frags,
             status_msg,
+            status_is_error: false,
+            about_open: false,
         })
     }
 }
 
 impl eframe::App for FluxGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::brand::draw_standalone_footer(ctx, &mut self.about_open);
         self.draw_panels(ctx);
     }
 }
@@ -237,7 +248,7 @@ impl FluxGuiApp {
     /// Renders all Flux Studio panels onto `ctx`.
     pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("flux_top").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.heading("OSABT Flux v2.0.0");
                 ui.separator();
                 ui.selectable_value(
@@ -266,54 +277,109 @@ impl FluxGuiApp {
                     "4. Kinetics & Plasmid Map",
                 );
                 ui.separator();
+                if ui.button("Open A-Ci...").clicked() {
+                    if let Some(p) = pick_open_file("Open Leaf A-Ci CSV", "CSV", &["csv", "tsv"]) {
+                        if let Some(raw) = read_text_reported(&p, &mut self.status_msg, &mut self.status_is_error) {
+                            match parse_aci_csv(&raw).and_then(|pts| fit_fvcb_aci_curve(&pts).map(|f| (pts, f))) {
+                                Ok((pts, fit)) => {
+                                    self.aci_pts = pts;
+                                    self.aci_fit = fit;
+                                    self.status_is_error = false;
+                                    self.status_msg = format!(
+                                        "Loaded A-Ci '{}': Vcmax={:.1}, Jmax={:.1}, TPU={:.1} (R^2={:.4})",
+                                        p.display(), self.aci_fit.vcmax, self.aci_fit.jmax, self.aci_fit.tpu, self.aci_fit.r_squared
+                                    );
+                                }
+                                Err(e) => {
+                                    self.status_is_error = true;
+                                    self.status_msg = format!("A-Ci parse/fit error: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
+                if ui.button("Open Stream DO...").clicked() {
+                    if let Some(p) = pick_open_file("Open Stream Diel DO CSV", "CSV", &["csv", "tsv"]) {
+                        if let Some(raw) = read_text_reported(&p, &mut self.status_msg, &mut self.status_is_error) {
+                            match parse_stream_do_csv(&raw).and_then(|pts| fit_odum_stream_metabolism(&pts).map(|r| (pts, r))) {
+                                Ok((pts, rep)) => {
+                                    self.stream_pts = pts;
+                                    self.stream_rep = rep;
+                                    self.status_is_error = false;
+                                    self.status_msg = format!(
+                                        "Loaded Stream DO '{}': GPP={:.2}, ER={:.2}, NEP={:+.2} g O2/m2/d",
+                                        p.display(), self.stream_rep.gpp_g_o2_m2_d, self.stream_rep.er_g_o2_m2_d, self.stream_rep.nep_g_o2_m2_d
+                                    );
+                                }
+                                Err(e) => {
+                                    self.status_is_error = true;
+                                    self.status_msg = format!("Stream DO parse/fit error: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
                 if ui.button("Export Dual-Panel .svg").clicked() {
-                    let svg = render_flux_svg(
-                        &self.aci_pts,
-                        &self.aci_fit,
-                        &self.stream_pts,
-                        &self.stream_rep,
-                        "OSABT Ecophysiology & Stream Flux",
-                    );
-                    if fs::write("osabt_flux_report.svg", svg).is_ok() {
-                        self.status_msg = String::from("Exported osabt_flux_report.svg!");
+                    if let Some(path) = pick_save_file("Export Flux SVG", "osabt_flux_report.svg", "SVG Image", &["svg"]) {
+                        let svg = render_flux_svg(
+                            &self.aci_pts,
+                            &self.aci_fit,
+                            &self.stream_pts,
+                            &self.stream_rep,
+                            "OSABT Ecophysiology & Stream Flux",
+                        );
+                        write_text_reported(
+                            &path,
+                            &svg,
+                            &mut self.status_msg,
+                            &mut self.status_is_error,
+                            "Exported Flux SVG",
+                        );
                     }
                 }
             });
         });
 
         egui::TopBottomPanel::bottom("flux_bot").show(ctx, |ui| {
-            match self.view {
-                FluxView::SurvivalAndEcotox => {
-                    ui.label(format!(
-                        "Kaplan-Meier Log-Rank: chi^2 = {:.3}, p = {:.4} | Cox HR = {:.2} (95% CI {:.2}-{:.2}) | Probit LC50 = {:.2} (95% CI {:.2}-{:.2})",
-                        self.log_rank.chi_square,
-                        self.log_rank.p_value,
-                        self.cox_fit.hazard_ratio,
-                        self.cox_fit.hr_ci95.0,
-                        self.cox_fit.hr_ci95.1,
-                        self.ecotox_fit.lc50,
-                        self.ecotox_fit.lc50_ci95.0,
-                        self.ecotox_fit.lc50_ci95.1
-                    ));
-                }
-                FluxView::KineticsAndPlasmid => {
-                    let top = &self.kin_fits[0];
-                    ui.label(format!(
-                        "Top Inhibition Fit: {} (Km={:.1} uM, Ki={:.1} nM, R^2={:.4}) | Morrison [E]_T={:.1} nM, Ki_app={:.1} nM | {} ({} bp, {} digest frags via {})",
-                        top.mechanism.label(),
-                        top.km_um,
-                        top.ki_nm,
-                        top.r_squared,
-                        self.morrison_fit.active_enzyme_et_nm,
-                        self.morrison_fit.ki_app_nm,
-                        self.plasmid.name,
-                        self.plasmid.sequence.len(),
-                        self.digest_frags.len(),
-                        self.digest_enzymes.join(" + ")
-                    ));
-                }
-                _ => {
-                    ui.label(&self.status_msg);
+            if self.status_is_error {
+                draw_status_banner(ui, &self.status_msg, true);
+            } else {
+                match self.view {
+                    FluxView::SurvivalAndEcotox => {
+                        ui.label(format!(
+                            "Kaplan-Meier Log-Rank: chi^2 = {:.3}, p = {:.4} | Cox HR = {:.2} (95% CI {:.2}-{:.2}) | Probit LC50 = {:.2} (95% CI {:.2}-{:.2})",
+                            self.log_rank.chi_square,
+                            self.log_rank.p_value,
+                            self.cox_fit.hazard_ratio,
+                            self.cox_fit.hr_ci95.0,
+                            self.cox_fit.hr_ci95.1,
+                            self.ecotox_fit.lc50,
+                            self.ecotox_fit.lc50_ci95.0,
+                            self.ecotox_fit.lc50_ci95.1
+                        ));
+                    }
+                    FluxView::KineticsAndPlasmid => {
+                        if let Some(top) = self.kin_fits.first() {
+                            ui.label(format!(
+                                "Top Inhibition Fit: {} (Km={:.1} uM, Ki={:.1} nM, R^2={:.4}) | Morrison [E]_T={:.1} nM, Ki_app={:.1} nM | {} ({} bp, {} digest frags via {})",
+                                top.mechanism.label(),
+                                top.km_um,
+                                top.ki_nm,
+                                top.r_squared,
+                                self.morrison_fit.active_enzyme_et_nm,
+                                self.morrison_fit.ki_app_nm,
+                                self.plasmid.name,
+                                self.plasmid.sequence.len(),
+                                self.digest_frags.len(),
+                                self.digest_enzymes.join(" + ")
+                            ));
+                        } else {
+                            draw_status_banner(ui, &self.status_msg, false);
+                        }
+                    }
+                    _ => {
+                        draw_status_banner(ui, &self.status_msg, false);
+                    }
                 }
             }
         });
@@ -1015,8 +1081,11 @@ impl FluxGuiApp {
 
         ui.columns(2, |cols| {
             // Left Column: Top = Global 2D Inhibition V vs [S], Bottom = Morrison Tight-Binding
-            let w0 = cols[0].available_width().max(420.0);
-            let best_kin = &self.kin_fits[0];
+            let w0 = cols[0].available_width().max(240.0);
+            let Some(best_kin) = self.kin_fits.first() else {
+                cols[0].label("No global inhibition fit available.");
+                return;
+            };
             {
                 let (resp, painter) =
                     cols[0].allocate_painter(egui::vec2(w0, top_h), egui::Sense::hover());
@@ -1105,7 +1174,7 @@ impl FluxGuiApp {
                         i_levels.push(pt.inhibitor_nm);
                     }
                 }
-                i_levels.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                i_levels.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let cols_i = [
                     egui::Color32::from_rgb(37, 99, 235),
                     egui::Color32::from_rgb(5, 150, 105),
@@ -1827,58 +1896,45 @@ fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) 
             fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
         }
     }
-    fn crc32(bytes: &[u8]) -> u32 {
-        let mut c = !0u32;
-        for &b in bytes {
-            c ^= u32::from(b);
-            for _ in 0..8 {
-                c = (c >> 1) ^ (0xEDB8_8320 & (0u32.wrapping_sub(c & 1)));
+    let file = fs::File::create(path)
+        .map_err(|e| format!("Failed creating PNG '{}': {e}", path.display()))?;
+    let writer = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::High);
+    let mut png_writer = encoder
+        .write_header()
+        .map_err(|e| format!("Failed writing PNG header '{}': {e}", path.display()))?;
+    png_writer
+        .write_image_data(rgba)
+        .map_err(|e| format!("Failed writing PNG data '{}': {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cycles_all_flux_views_headlessly() {
+        let ctx = egui::Context::default();
+        let mut app = FluxGuiApp::new(None, None).unwrap();
+        for view in [
+            FluxView::DualOverview,
+            FluxView::LeafAciFvcb,
+            FluxView::StreamDielDo,
+            FluxView::SurvivalAndEcotox,
+            FluxView::KineticsAndPlasmid,
+        ] {
+            app.view = view;
+            for frame in 0..2 {
+                let mut raw = egui::RawInput::default();
+                raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0)));
+                raw.time = Some(frame as f64 / 60.0);
+                let out = ctx.run(raw, |c| app.draw_panels(c));
+                assert!(!out.shapes.is_empty());
             }
         }
-        !c
     }
-    fn push_chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
-        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        let start = out.len();
-        out.extend_from_slice(tag);
-        out.extend_from_slice(data);
-        out.extend_from_slice(&crc32(&out[start..]).to_be_bytes());
-    }
-    let row_bytes = (width as usize) * 4;
-    let mut raw = Vec::with_capacity((row_bytes + 1) * (height as usize));
-    for row in rgba.chunks_exact(row_bytes) {
-        raw.push(0);
-        raw.extend_from_slice(row);
-    }
-    let (mut s1, mut s2) = (1u32, 0u32);
-    for &b in &raw {
-        s1 = (s1 + u32::from(b)) % 65521;
-        s2 = (s2 + s1) % 65521;
-    }
-    let mut zlib = Vec::with_capacity(raw.len() + 64);
-    zlib.extend_from_slice(&[0x78, 0x01]);
-    let mut off = 0usize;
-    while off < raw.len() {
-        let end = (off + u16::MAX as usize).min(raw.len());
-        let block = &raw[off..end];
-        let len = block.len() as u16;
-        zlib.push(u8::from(end == raw.len()));
-        zlib.extend_from_slice(&len.to_le_bytes());
-        zlib.extend_from_slice(&(!len).to_le_bytes());
-        zlib.extend_from_slice(block);
-        off = end;
-    }
-    zlib.extend_from_slice(&((s2 << 16) | s1).to_be_bytes());
-
-    let mut png = Vec::with_capacity(zlib.len() + 64);
-    png.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
-    let mut ihdr = [0u8; 13];
-    ihdr[0..4].copy_from_slice(&width.to_be_bytes());
-    ihdr[4..8].copy_from_slice(&height.to_be_bytes());
-    ihdr[8] = 8;
-    ihdr[9] = 6;
-    push_chunk(&mut png, b"IHDR", &ihdr);
-    push_chunk(&mut png, b"IDAT", &zlib);
-    push_chunk(&mut png, b"IEND", &[]);
-    fs::write(path, &png).map_err(|e| format!("Failed writing PNG '{}': {e}", path.display()))
 }

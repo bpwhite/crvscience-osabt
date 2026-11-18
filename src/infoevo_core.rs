@@ -225,7 +225,7 @@ pub fn parse_fasta_alignment(title: &str, raw_fasta: &str) -> Result<SequenceAli
     let mut cur_header: Option<String> = None;
     let mut cur_seq: Vec<u8> = Vec::new();
 
-    for line in raw_fasta.lines() {
+    for line in raw_fasta.trim_start_matches('\u{feff}').lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with(';') {
             continue;

@@ -396,7 +396,8 @@ impl TriMesh {
 
 /// Parses a Binary or ASCII `.stl` byte buffer into a deduplicated [`TriMesh`] for inspection.
 pub fn parse_stl_bytes(name: &str, bytes: &[u8]) -> Result<TriMesh, String> {
-    if bytes.len() >= 84 && !bytes.starts_with(b"solid ") {
+    let bytes_nobom = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    if bytes.len() >= 84 && !bytes_nobom.starts_with(b"solid ") {
         let n_tri = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
         if 84 + n_tri * 50 <= bytes.len() {
             let mut mesh = TriMesh::new(name);
@@ -427,7 +428,7 @@ pub fn parse_stl_bytes(name: &str, bytes: &[u8]) -> Result<TriMesh, String> {
     let mut mesh = TriMesh::new(name);
     let mut vmap: HashMap<[u32; 3], u32> = HashMap::new();
     let mut cur_vs: Vec<u32> = Vec::with_capacity(3);
-    for line in text.lines() {
+    for line in text.trim_start_matches('\u{feff}').lines() {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("vertex") {
             let nums: Vec<f32> = rest

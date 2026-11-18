@@ -145,6 +145,7 @@ pub fn scan_crispr_candidates(
     nuclease: CrisprNuclease,
 ) -> Result<(String, Vec<CrisprGuideCandidate>), String> {
     let stripped: String = raw_target_dna
+        .trim_start_matches('\u{feff}')
         .lines()
         .filter(|l| !l.trim_start().starts_with('>'))
         .collect::<Vec<_>>()

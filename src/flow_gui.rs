@@ -30,12 +30,16 @@ use crate::flow_gate::{
     evaluate_polygon_gate, evaluate_quadrant_gates, render_flow_biaxial_svg, GatePopulationStats,
     LogicleParams, LogicleScale, PolygonGate,
 };
+use crate::gui_io::{
+    draw_status_banner, pick_open_file, pick_save_file, read_bytes_reported, write_text_reported,
+};
 
 /// Launches the `eframe`/`egui` native desktop studio for `osabt flow`.
 pub fn run_flow_gui(fcs_path: Option<PathBuf>) -> Result<(), String> {
     let app = FlowGuiApp::new(fcs_path)?;
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(crate::brand::osabt_icon_data())
             .with_title("OSABT Flow Studio (v1.8.0) — FCS 3.1 Compensation & Logicle Gating")
             .with_inner_size([1140.0, 740.0]),
         ..Default::default()
@@ -61,6 +65,8 @@ pub struct FlowGuiApp {
     quad_stats: Vec<GatePopulationStats>,
     live_gate_stats: Option<GatePopulationStats>,
     status_msg: String,
+    status_is_error: bool,
+    about_open: bool,
 }
 
 impl FlowGuiApp {
@@ -91,9 +97,33 @@ impl FlowGuiApp {
             quad_stats: Vec::new(),
             live_gate_stats: None,
             status_msg: String::new(),
+            status_is_error: false,
+            about_open: false,
         };
         app.recompute();
         Ok(app)
+    }
+
+    fn load_fcs_bytes(&mut self, bytes: &[u8]) {
+        match parse_fcs_bytes(bytes) {
+            Ok(raw_ds) => {
+                self.comp_ds = compensate_fcs_dataset(&raw_ds).ok().map(|(d, _)| d);
+                self.apply_compensation = self.comp_ds.is_some();
+                self.x_ch = if raw_ds.channels.len() >= 4 { 2 } else { 0 };
+                self.y_ch = if raw_ds.channels.len() >= 4 {
+                    3
+                } else {
+                    1.min(raw_ds.channels.len().saturating_sub(1))
+                };
+                self.raw_ds = raw_ds;
+                self.status_is_error = false;
+                self.recompute();
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("FCS parse error: {e}");
+            }
+        }
     }
 
     fn active_ds(&self) -> &FcsDataset {
@@ -143,15 +173,14 @@ impl FlowGuiApp {
             (quad_stats, live_gate_stats, status_msg)
         };
         self.quad_stats = quad_stats;
-        if let Some(stats) = live_gate_stats {
-            self.live_gate_stats = Some(stats);
-        }
+        self.live_gate_stats = live_gate_stats;
         self.status_msg = status_msg;
     }
 }
 
 impl eframe::App for FlowGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::brand::draw_standalone_footer(ctx, &mut self.about_open);
         self.draw_panels(ctx);
     }
 }
@@ -160,9 +189,16 @@ impl FlowGuiApp {
     /// Renders all Flow Cytometry Studio panels onto `ctx`.
     pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("flow_top").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.heading("OSABT Flow v1.8.0");
                 ui.separator();
+                if ui.button("Open .fcs...").clicked() {
+                    if let Some(p) = pick_open_file("Open FCS 3.1 File", "FCS File", &["fcs"]) {
+                        if let Some(bytes) = read_bytes_reported(&p, &mut self.status_msg, &mut self.status_is_error) {
+                            self.load_fcs_bytes(&bytes);
+                        }
+                    }
+                }
                 if self.comp_ds.is_some()
                     && ui
                         .checkbox(&mut self.apply_compensation, "Apply $SPILLOVER Compensation")
@@ -177,30 +213,36 @@ impl FlowGuiApp {
                     self.recompute();
                 }
                 if ui.button("Export Biaxial .svg").clicked() {
-                    let svg = render_flow_biaxial_svg(
-                        self.active_ds(),
-                        self.x_ch,
-                        self.y_ch,
-                        self.x_cut_disp,
-                        self.y_cut_disp,
-                        &self.scale,
-                        "OSABT Flow Cytometry",
-                    );
-                    if fs::write("flow_biaxial_gate.svg", svg).is_ok() {
-                        self.status_msg = String::from("Exported flow_biaxial_gate.svg!");
+                    if let Some(path) = pick_save_file("Export Flow Biaxial SVG", "flow_biaxial_gate.svg", "SVG Image", &["svg"]) {
+                        let svg = render_flow_biaxial_svg(
+                            self.active_ds(),
+                            self.x_ch,
+                            self.y_ch,
+                            self.x_cut_disp,
+                            self.y_cut_disp,
+                            &self.scale,
+                            "OSABT Flow Cytometry",
+                        );
+                        write_text_reported(
+                            &path,
+                            &svg,
+                            &mut self.status_msg,
+                            &mut self.status_is_error,
+                            "Exported Flow Biaxial SVG",
+                        );
                     }
                 }
             });
         });
 
         egui::TopBottomPanel::bottom("flow_bot").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.columns(2, |cols| {
                 let (resp, painter) = cols[0].allocate_painter(
-                    egui::vec2(cols[0].available_width().max(480.0), 540.0),
+                    egui::vec2(cols[0].available_width().max(240.0), 540.0),
                     egui::Sense::click_and_drag(),
                 );
                 let rect = resp.rect;
@@ -209,17 +251,20 @@ impl FlowGuiApp {
                 if resp.dragged() || resp.clicked() {
                     if let Some(p) = resp.interact_pointer_pos() {
                         self.x_cut_disp =
-                            (((p.x - rect.left()) / rect.width()) as f64).clamp(0.05, 0.95);
+                            (((p.x - rect.left()) / rect.width().max(1.0)) as f64).clamp(0.05, 0.95);
                         self.y_cut_disp =
-                            (((rect.bottom() - p.y) / rect.height()) as f64).clamp(0.05, 0.95);
+                            (((rect.bottom() - p.y) / rect.height().max(1.0)) as f64).clamp(0.05, 0.95);
                         self.recompute();
                     }
                 }
 
                 let ds = self.active_ds();
                 for ev in &ds.events {
-                    let dx = self.scale.transform(ev[self.x_ch]).clamp(0.0, 1.0) as f32;
-                    let dy = self.scale.transform(ev[self.y_ch]).clamp(0.0, 1.0) as f32;
+                    let (Some(&xv), Some(&yv)) = (ev.get(self.x_ch), ev.get(self.y_ch)) else {
+                        continue;
+                    };
+                    let dx = self.scale.transform(xv).clamp(0.0, 1.0) as f32;
+                    let dy = self.scale.transform(yv).clamp(0.0, 1.0) as f32;
                     let px = rect.left() + dx * rect.width();
                     let py = rect.bottom() - dy * rect.height();
                     let col = match (dx as f64 >= self.x_cut_disp, dy as f64 >= self.y_cut_disp) {
@@ -254,7 +299,7 @@ impl FlowGuiApp {
                 cols[1].horizontal(|ui| {
                     ui.label("X-Axis:");
                     egui::ComboBox::from_id_salt("flow_x")
-                        .selected_text(&ch_names[self.x_ch])
+                        .selected_text(ch_names.get(self.x_ch).map(|s| s.as_str()).unwrap_or("—"))
                         .show_ui(ui, |ui| {
                             for (i, nm) in ch_names.iter().enumerate() {
                                 if ui.selectable_value(&mut self.x_ch, i, nm).changed() {
@@ -266,7 +311,7 @@ impl FlowGuiApp {
                 cols[1].horizontal(|ui| {
                     ui.label("Y-Axis:");
                     egui::ComboBox::from_id_salt("flow_y")
-                        .selected_text(&ch_names[self.y_ch])
+                        .selected_text(ch_names.get(self.y_ch).map(|s| s.as_str()).unwrap_or("—"))
                         .show_ui(ui, |ui| {
                             for (i, nm) in ch_names.iter().enumerate() {
                                 if ui.selectable_value(&mut self.y_ch, i, nm).changed() {
@@ -306,5 +351,53 @@ impl FlowGuiApp {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flow_fcs::{write_fcs_31_bytes, FcsChannelInfo};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn rejects_par_zero_and_clears_stale_gate_stats_on_one_channel_reload() {
+        // Construct minimal FCS 3.1 buffer with $PAR = 0
+        let text = "/$BEGINANALYSIS/0/$ENDANALYSIS/0/$BEGINSTEXT/0/$ENDSTEXT/0/$BEGINDATA/0/$ENDDATA/0/$BYTEORD/1,2,3,4/$DATATYPE/F/$MODE/L/$NEXTDATA/0/$PAR/0/$TOT/0/";
+        let text_start = 256usize;
+        let text_end = text_start + text.len() - 1;
+        let mut par0 = vec![b' '; text_end + 1];
+        let hdr = format!("FCS3.1    {:>8}{:>8}{:>8}{:>8}{:>8}{:>8}", text_start, text_end, 0, 0, 0, 0);
+        par0[..58].copy_from_slice(&hdr.as_bytes()[..58]);
+        par0[text_start..=text_end].copy_from_slice(text.as_bytes());
+        assert!(parse_fcs_bytes(&par0).is_err());
+
+        // Start with 4-channel demo (live_gate_stats is Some)
+        let mut app = FlowGuiApp::new(None).unwrap();
+        assert!(app.live_gate_stats.is_some());
+
+        // Reload 1-channel FCS -> live_gate_stats must become None and draw cleanly
+        let one_ch = FcsDataset {
+            version: String::from("FCS3.1"),
+            num_events: 4,
+            channels: vec![FcsChannelInfo {
+                index_1based: 1,
+                short_name: String::from("FSC-A"),
+                stain_name: String::from("Scatter"),
+                bits: 32,
+                range: 262_144.0,
+            }],
+            events: vec![vec![1000.0], vec![2000.0], vec![3000.0], vec![4000.0]],
+            spillover: None,
+            keywords: BTreeMap::new(),
+        };
+        let one_bytes = write_fcs_31_bytes(&one_ch);
+        app.load_fcs_bytes(&one_bytes);
+        assert!(app.live_gate_stats.is_none());
+
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0)));
+        let _ = ctx.run(raw, |c| app.draw_panels(c));
     }
 }

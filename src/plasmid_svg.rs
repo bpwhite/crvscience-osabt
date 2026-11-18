@@ -28,7 +28,137 @@ use crate::gibson::{CircularBindingSite, Strand};
 use crate::plasmid_digest::find_unique_cutters;
 use crate::plasmid_io::PlasmidRecord;
 use crate::gc_fraction;
-use crate::svg_util::xml_escape;
+use crate::svg_util::{format_polyline_points, xml_escape};
+
+/// Input callout descriptor for circular plasmid hemisphere sweep-line relaxation.
+#[derive(Debug, Clone)]
+pub struct CircularCalloutInput {
+    pub label: String,
+    /// Clockwise angle in `[0, 2*PI)` from 12 o'clock.
+    pub angle_rad: f64,
+    /// Radius where the leader line anchors (backbone or feature outer edge).
+    pub anchor_radius: f64,
+    pub is_feature: bool,
+    pub color_hex: String,
+    pub source_index: usize,
+}
+
+/// Relaxed circular callout output with 3-point elbow leader coordinates.
+#[derive(Debug, Clone)]
+pub struct CircularCalloutPlaced {
+    pub input: CircularCalloutInput,
+    /// Anchor point on backbone or feature arc.
+    pub p0: (f64, f64),
+    /// Radial elbow point outside feature tracks.
+    pub p1: (f64, f64),
+    /// Relaxed horizontal label anchor point.
+    pub p2: (f64, f64),
+    pub is_right_hemisphere: bool,
+}
+
+/// Solves collision-free callout positions across Left and Right hemispheres using
+/// sweep-line vertical relaxation, ring-exclusion horizontal push-out, and 3-point elbow leaders.
+pub fn layout_circular_callouts(
+    cx: f64,
+    cy: f64,
+    r_feat_outer: f64,
+    canvas_bounds: (f64, f64, f64, f64),
+    min_gap_y: f64,
+    inputs: Vec<CircularCalloutInput>,
+) -> Vec<CircularCalloutPlaced> {
+    let (min_x, min_y, max_x, max_y) = canvas_bounds;
+    let y_lo = (min_y + 12.0).min(cy);
+    let y_hi = (max_y - 12.0).max(y_lo + 10.0);
+    let r_elbow = r_feat_outer + 16.0;
+    let r_ring_excl = r_feat_outer + 16.0;
+
+    let mut right_items: Vec<(f64, CircularCalloutInput)> = Vec::new();
+    let mut left_items: Vec<(f64, CircularCalloutInput)> = Vec::new();
+
+    for inp in inputs {
+        let ang = inp.angle_rad.rem_euclid(2.0 * PI);
+        let theta = ang - PI * 0.5;
+        let y_nat = cy + r_elbow * theta.sin();
+        if theta.cos() >= -1e-9 {
+            right_items.push((y_nat, inp));
+        } else {
+            left_items.push((y_nat, inp));
+        }
+    }
+
+    right_items.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.angle_rad.partial_cmp(&b.1.angle_rad).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    left_items.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.1.angle_rad.partial_cmp(&a.1.angle_rad).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    let mut placed = Vec::with_capacity(right_items.len() + left_items.len());
+    for (is_right, items) in [(true, right_items), (false, left_items)] {
+        let count = items.len();
+        if count == 0 {
+            continue;
+        }
+        let avail_h = (y_hi - y_lo).max(1.0);
+        let gap = if count > 1 {
+            min_gap_y.min(avail_h / ((count - 1) as f64))
+        } else {
+            min_gap_y
+        };
+        let mut ys: Vec<f64> = items.iter().map(|(y, _)| y.clamp(y_lo, y_hi)).collect();
+        if count > 1 {
+            for i in 1..count {
+                ys[i] = ys[i].max(ys[i - 1] + gap);
+            }
+            if ys[count - 1] > y_hi {
+                ys[count - 1] = y_hi;
+            }
+            for i in (0..count - 1).rev() {
+                ys[i] = ys[i].min(ys[i + 1] - gap);
+            }
+            if ys[0] < y_lo {
+                ys[0] = y_lo;
+                for i in 1..count {
+                    ys[i] = ys[i].max(ys[i - 1] + gap).min(y_hi);
+                }
+            }
+        }
+
+        for ((_, inp), y_rel) in items.into_iter().zip(ys) {
+            let ang = inp.angle_rad.rem_euclid(2.0 * PI);
+            let p0 = polar_xy(cx, cy, inp.anchor_radius, ang);
+            let p1 = polar_xy(cx, cy, r_elbow, ang);
+            let dy = (y_rel - cy).abs();
+            let ring_clear_dx = if dy < r_ring_excl {
+                (r_ring_excl * r_ring_excl - dy * dy).sqrt() + 14.0
+            } else {
+                18.0
+            };
+            let elbow_dx = (p1.0 - cx).abs() + 10.0;
+            let dx = ring_clear_dx.max(elbow_dx);
+            let label_x = if is_right {
+                let min_right_x = cx + ring_clear_dx;
+                (cx + dx).min((max_x - 8.0).max(min_right_x))
+            } else {
+                let max_left_x = cx - ring_clear_dx;
+                (cx - dx).max((min_x + 8.0).min(max_left_x))
+            };
+            placed.push(CircularCalloutPlaced {
+                input: inp,
+                p0,
+                p1,
+                p2: (label_x, y_rel),
+                is_right_hemisphere: is_right,
+            });
+        }
+    }
+
+    placed
+}
 
 /// DNA molecular-weight ladder standard for virtual agarose gel electrophoresis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,12 +305,12 @@ pub fn render_plasmid_map_svg(
     primers: &[CircularBindingSite],
     include_attribution: bool,
 ) -> String {
-    let width = 760.0_f64;
-    let height = 640.0_f64;
-    let cx = 380.0_f64;
-    let cy = 310.0_f64;
-    let r_backbone = 175.0_f64;
-    let r_gc_base = 128.0_f64;
+    let width = 820.0_f64;
+    let height = 660.0_f64;
+    let cx = 410.0_f64;
+    let cy = 325.0_f64;
+    let r_backbone = 162.0_f64;
+    let r_gc_base = 116.0_f64;
     let n = rec.sequence.len().max(1);
 
     let mut svg = format!(
@@ -205,7 +335,7 @@ pub fn render_plasmid_map_svg(
         let pos = (b_idx * step) % n;
         let win_end = (pos + step).min(n);
         let local_gc = gc_fraction(&rec.sequence[pos..win_end.max(pos + 1)]);
-        let r = r_gc_base + (local_gc - mean_gc) * 42.0;
+        let r = r_gc_base + (local_gc - mean_gc) * 38.0;
         let ang = (pos as f64 / n as f64) * 2.0 * PI;
         let (gx, gy) = polar_xy(cx, cy, r, ang);
         if b_idx == 0 {
@@ -241,8 +371,9 @@ pub fn render_plasmid_map_svg(
         ));
     }
 
-    // 4. Annotated directional feature arcs + radial labels
-    for feat in &rec.features {
+    // 4. Annotated directional feature arcs + unified callout pool
+    let mut callout_inputs: Vec<CircularCalloutInput> = Vec::new();
+    for (idx, feat) in rec.features.iter().enumerate() {
         let start_ang = (feat.start_0 as f64 / n as f64) * 2.0 * PI;
         let span_bp = feat.span_bp(n);
         let sweep = (span_bp as f64 / n as f64) * 2.0 * PI;
@@ -255,33 +386,63 @@ pub fn render_plasmid_map_svg(
             sweep,
             feat.strand,
         );
-        let mid_ang = start_ang + sweep * 0.5;
-        let (lx, ly) = polar_xy(cx, cy, r_backbone + 38.0, mid_ang);
-        let anchor = if lx >= cx { "start" } else { "end" };
         svg.push_str(&format!(
-            "<path d=\"{d}\" fill=\"{}\" fill-opacity=\"0.88\" stroke=\"#0f172a\" stroke-width=\"0.8\"/>\n\
-             <text class=\"feat\" x=\"{lx:.1}\" y=\"{ly:.1}\" text-anchor=\"{anchor}\" dominant-baseline=\"central\">{}</text>\n",
+            "<path d=\"{d}\" fill=\"{}\" fill-opacity=\"0.88\" stroke=\"#0f172a\" stroke-width=\"0.8\"/>\n",
             xml_escape(&feat.color_hex),
-            xml_escape(&feat.name)
         ));
+        callout_inputs.push(CircularCalloutInput {
+            label: feat.name.clone(),
+            angle_rad: start_ang + sweep * 0.5,
+            anchor_radius: r_backbone + 22.0,
+            is_feature: true,
+            color_hex: feat.color_hex.clone(),
+            source_index: idx,
+        });
     }
 
-    // 5. Unique restriction cutter callouts
+    // 5. Unique restriction cutters added to same unified callout pool
     let uniques = find_unique_cutters(rec);
     for (u_idx, site) in uniques.iter().take(16).enumerate() {
         let ang = (site.cut_top_0 as f64 / n as f64) * 2.0 * PI;
-        let r_tick_out = r_backbone + 56.0 + ((u_idx % 2) as f64) * 14.0;
-        let (x1, y1) = polar_xy(cx, cy, r_backbone, ang);
-        let (x2, y2) = polar_xy(cx, cy, r_tick_out, ang);
-        let anchor = if x2 >= cx { "start" } else { "end" };
-        let dx = if x2 >= cx { 4.0 } else { -4.0 };
-        svg.push_str(&format!(
-            "<line x1=\"{x1:.1}\" y1=\"{y1:.1}\" x2=\"{x2:.1}\" y2=\"{y2:.1}\" stroke=\"#0284c7\" stroke-width=\"1.0\" stroke-dasharray=\"2 2\"/>\n\
-             <text class=\"enz\" x=\"{:.1}\" y=\"{y2:.1}\" text-anchor=\"{anchor}\" dominant-baseline=\"central\">{} ({})</text>\n",
-            x2 + dx,
-            xml_escape(&site.enzyme_name),
-            site.cut_top_0 + 1
-        ));
+        callout_inputs.push(CircularCalloutInput {
+            label: format!("{} ({})", site.enzyme_name, site.cut_top_0 + 1),
+            angle_rad: ang,
+            anchor_radius: r_backbone,
+            is_feature: false,
+            color_hex: String::from("#0284c7"),
+            source_index: u_idx,
+        });
+    }
+
+    let placed_callouts = layout_circular_callouts(
+        cx,
+        cy,
+        r_backbone + 24.0,
+        (120.0, 22.0, width - 120.0, height - 30.0),
+        16.0,
+        callout_inputs,
+    );
+    for c in &placed_callouts {
+        let pts = format_polyline_points(&[c.p0, c.p1, c.p2]);
+        let anchor = if c.is_right_hemisphere { "start" } else { "end" };
+        let dx = if c.is_right_hemisphere { 4.0 } else { -4.0 };
+        if c.input.is_feature {
+            svg.push_str(&format!(
+                "<polyline fill=\"none\" stroke=\"#64748b\" stroke-width=\"1.0\" points=\"{pts}\"/>\n\
+                 <text class=\"feat\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"{anchor}\" dominant-baseline=\"central\">{}</text>\n",
+                c.p2.0 + dx,
+                c.p2.1,
+                xml_escape(&c.input.label),
+            ));
+        } else {
+            svg.push_str(&format!(
+                "<polyline fill=\"none\" stroke=\"#0284c7\" stroke-width=\"1.0\" stroke-dasharray=\"2 2\" points=\"{pts}\"/>\n\
+                 <text class=\"enz\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"{anchor}\" dominant-baseline=\"central\">{}</text>\n",
+                c.p2.0 + dx,
+                c.p2.1,
+                xml_escape(&c.input.label),
+            ));
+        }
     }
 
     // 6. Bound primer arrows (with 5' tail indicator)
@@ -462,5 +623,140 @@ mod tests {
         assert!(gel_svg.starts_with("<svg"));
         assert!(gel_svg.contains("1 kb Plus"));
         assert!(gel_svg.contains("EcoRI+XhoI"));
+    }
+
+    #[test]
+    fn circular_callout_layout_separates_hemisphere_labels_and_clears_ring() {
+        let rec = PlasmidRecord::demo_pcrv_gfp();
+        let n = rec.sequence.len().max(1);
+        let cx = 410.0;
+        let cy = 325.0;
+        let r_backbone = 162.0;
+        let r_feat_outer = r_backbone + 24.0;
+        let mut inputs = Vec::new();
+        for (i, feat) in rec.features.iter().enumerate() {
+            let start_ang = (feat.start_0 as f64 / n as f64) * 2.0 * PI;
+            let sweep = (feat.span_bp(n) as f64 / n as f64) * 2.0 * PI;
+            inputs.push(CircularCalloutInput {
+                label: feat.name.clone(),
+                angle_rad: start_ang + sweep * 0.5,
+                anchor_radius: r_backbone + 22.0,
+                is_feature: true,
+                color_hex: feat.color_hex.clone(),
+                source_index: i,
+            });
+        }
+        for (i, site) in find_unique_cutters(&rec).iter().take(16).enumerate() {
+            inputs.push(CircularCalloutInput {
+                label: format!("{} ({})", site.enzyme_name, site.cut_top_0 + 1),
+                angle_rad: (site.cut_top_0 as f64 / n as f64) * 2.0 * PI,
+                anchor_radius: r_backbone,
+                is_feature: false,
+                color_hex: String::from("#0284c7"),
+                source_index: i,
+            });
+        }
+
+        let placed = layout_circular_callouts(
+            cx,
+            cy,
+            r_feat_outer,
+            (120.0, 22.0, 700.0, 630.0),
+            16.0,
+            inputs,
+        );
+        assert!(!placed.is_empty());
+
+        for hemisphere in [true, false] {
+            let mut ys: Vec<f64> = placed
+                .iter()
+                .filter(|c| c.is_right_hemisphere == hemisphere)
+                .map(|c| c.p2.1)
+                .collect();
+            ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for win in ys.windows(2) {
+                assert!(
+                    win[1] - win[0] >= 15.9,
+                    "hemisphere={hemisphere} labels collided: {} vs {}",
+                    win[0],
+                    win[1]
+                );
+            }
+        }
+        for c in &placed {
+            let dist = ((c.p2.0 - cx).powi(2) + (c.p2.1 - cy).powi(2)).sqrt();
+            assert!(
+                dist >= r_feat_outer + 15.0,
+                "label '{}' intersects ring: dist={dist:.1} < {:.1}",
+                c.input.label,
+                r_feat_outer + 15.0
+            );
+        }
+
+        // Dense synthetic clustered input near 12 o'clock and 9 o'clock
+        let dense: Vec<CircularCalloutInput> = (0..22)
+            .map(|i| CircularCalloutInput {
+                label: format!("Site_{i}"),
+                angle_rad: if i < 11 { 0.03 * (i as f64) } else { 4.5 + 0.03 * ((i - 11) as f64) },
+                anchor_radius: r_backbone,
+                is_feature: i % 3 == 0,
+                color_hex: String::from("#0284c7"),
+                source_index: i,
+            })
+            .collect();
+        let dense_placed = layout_circular_callouts(
+            cx,
+            cy,
+            r_feat_outer,
+            (120.0, 22.0, 700.0, 630.0),
+            16.0,
+            dense,
+        );
+        for hemisphere in [true, false] {
+            let mut ys: Vec<f64> = dense_placed
+                .iter()
+                .filter(|c| c.is_right_hemisphere == hemisphere)
+                .map(|c| c.p2.1)
+                .collect();
+            ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for win in ys.windows(2) {
+                assert!(win[1] - win[0] >= 15.9);
+            }
+        }
+
+        // Narrow-bounds ring clearance regression check
+        let narrow_placed = layout_circular_callouts(
+            cx,
+            cy,
+            r_feat_outer,
+            (250.0, 22.0, 570.0, 630.0),
+            16.0,
+            vec![
+                CircularCalloutInput {
+                    label: String::from("Right3"),
+                    angle_rad: PI * 0.5,
+                    anchor_radius: r_backbone,
+                    is_feature: true,
+                    color_hex: String::from("#22c55e"),
+                    source_index: 0,
+                },
+                CircularCalloutInput {
+                    label: String::from("Left9"),
+                    angle_rad: PI * 1.5,
+                    anchor_radius: r_backbone,
+                    is_feature: true,
+                    color_hex: String::from("#38bdf8"),
+                    source_index: 1,
+                },
+            ],
+        );
+        for c in &narrow_placed {
+            let dist = ((c.p2.0 - cx).powi(2) + (c.p2.1 - cy).powi(2)).sqrt();
+            assert!(
+                dist >= r_feat_outer + 16.0,
+                "narrow bounds pulled label '{}' inside ring: dist={dist:.2}",
+                c.input.label
+            );
+        }
     }
 }

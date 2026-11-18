@@ -173,7 +173,7 @@ pub fn parse_qpcr_table(raw: &str) -> Result<Vec<QpcrReactionWell>, String> {
     let mut wells = Vec::new();
     let mut header_seen = false;
 
-    for (line_idx, line) in raw.lines().enumerate() {
+    for (line_idx, line) in raw.trim_start_matches('\u{feff}').lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;

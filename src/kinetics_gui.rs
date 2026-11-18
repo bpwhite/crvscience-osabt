@@ -22,12 +22,14 @@
 //! Morrison (1969) tight-binding active-site & `Ki` regression, and single-substrate kinetics.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use egui::{Color32, Pos2, Sense, Shape, Stroke, Vec2};
 
+use crate::gui_io::{
+    draw_status_banner, pick_folder, pick_open_file, read_text_reported, write_text_reported,
+};
 use crate::kinetics_core::{
     convert_ic50_cheng_prusoff, demo_competitive_kinase_matrix_csv, demo_morrison_tight_binding_csv,
     eval_inhibition_velocity, eval_morrison_velocity, eval_single_substrate_velocity,
@@ -64,6 +66,8 @@ pub struct KineticsStudioApp {
     cp_s_um: f64,
     cp_km_um: f64,
     status_bar: String,
+    status_is_error: bool,
+    about_open: bool,
 }
 
 impl KineticsStudioApp {
@@ -109,6 +113,8 @@ impl KineticsStudioApp {
             status_bar: String::from(
                 "Global AICc selects Competitive inhibition (Ki = 22 nM) | Switch tabs for Morrison Tight-Binding & Single-Substrate fits.",
             ),
+            status_is_error: false,
+            about_open: false,
         };
 
         if let Some(p) = initial_csv {
@@ -117,51 +123,56 @@ impl KineticsStudioApp {
         app
     }
 
-    fn load_csv_file(&mut self, path: &PathBuf) {
-        match fs::read_to_string(path).and_then(|s| {
-            parse_kinetics_csv(&s)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-        }) {
-            Ok(pts) => {
-                let has_inh = pts.iter().any(|p| p.inhibitor_nm > 0.0);
-                if has_inh {
-                    if let Ok(fits) = fit_global_reversible_inhibition(&pts) {
-                        self.inh_fits = fits;
-                        self.selected_mech_idx = 0;
+    fn load_csv_file(&mut self, path: &Path) {
+        if let Some(s) = read_text_reported(path, &mut self.status_bar, &mut self.status_is_error) {
+            match parse_kinetics_csv(&s) {
+                Ok(pts) => {
+                    let has_inh = pts.iter().any(|p| p.inhibitor_nm > 0.0);
+                    if has_inh {
+                        if let Ok(fits) = fit_global_reversible_inhibition(&pts) {
+                            self.inh_fits = fits;
+                            self.selected_mech_idx = 0;
+                        }
+                        if let Ok(sf) =
+                            fit_single_substrate_models(&pts, Some(self.enzyme_et_for_kcat_nm))
+                        {
+                            self.single_fits = sf;
+                        }
+                        self.matrix_points = pts;
+                        self.mode = KineticsMode::GlobalInhibition;
+                        self.status_is_error = false;
+                        self.status_bar = format!("Loaded 2D kinetics matrix '{}'.", path.display());
+                    } else {
+                        let obs: Vec<(f64, f64)> =
+                            pts.iter().map(|p| (p.substrate_um, p.velocity)).collect();
+                        if let Ok(mf) = fit_morrison_tight_binding(
+                            &obs,
+                            if self.fix_morrison_et {
+                                Some(self.nominal_et_nm)
+                            } else {
+                                None
+                            },
+                            Some(self.nominal_et_nm),
+                            Some((self.morrison_s_um, self.morrison_km_um)),
+                        ) {
+                            self.morrison_obs = obs;
+                            self.morrison_fit = mf;
+                        }
+                        if let Ok(sf) =
+                            fit_single_substrate_models(&pts, Some(self.enzyme_et_for_kcat_nm))
+                        {
+                            self.single_fits = sf;
+                        }
+                        self.mode = KineticsMode::MorrisonTightBinding;
+                        self.status_is_error = false;
+                        self.status_bar = format!("Loaded 2-column kinetics curve '{}'.", path.display());
                     }
-                    if let Ok(sf) =
-                        fit_single_substrate_models(&pts, Some(self.enzyme_et_for_kcat_nm))
-                    {
-                        self.single_fits = sf;
-                    }
-                    self.matrix_points = pts;
-                    self.mode = KineticsMode::GlobalInhibition;
-                    self.status_bar = format!("Loaded 2D kinetics matrix '{}'.", path.display());
-                } else {
-                    let obs: Vec<(f64, f64)> =
-                        pts.iter().map(|p| (p.substrate_um, p.velocity)).collect();
-                    if let Ok(mf) = fit_morrison_tight_binding(
-                        &obs,
-                        if self.fix_morrison_et {
-                            Some(self.nominal_et_nm)
-                        } else {
-                            None
-                        },
-                        Some(self.nominal_et_nm),
-                        Some((self.morrison_s_um, self.morrison_km_um)),
-                    ) {
-                        self.morrison_obs = obs;
-                        self.morrison_fit = mf;
-                    }
-                    if let Ok(sf) =
-                        fit_single_substrate_models(&pts, Some(self.enzyme_et_for_kcat_nm))
-                    {
-                        self.single_fits = sf;
-                    }
-                    self.status_bar = format!("Loaded 2-column kinetics curve '{}'.", path.display());
+                }
+                Err(e) => {
+                    self.status_is_error = true;
+                    self.status_bar = format!("CSV load error: {e}");
                 }
             }
-            Err(e) => self.status_bar = format!("CSV load error: {e}"),
         }
     }
 
@@ -187,6 +198,7 @@ pub fn run_kinetics_gui(initial_csv: Option<PathBuf>) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1240.0, 780.0])
+            .with_icon(crate::brand::osabt_icon_data())
             .with_title(
                 "OSABT Kinetics — Global Ki Mode Selection, Eadie-Hofstee & Morrison Tight-Binding Studio (GPL-3.0)",
             ),
@@ -202,6 +214,7 @@ pub fn run_kinetics_gui(initial_csv: Option<PathBuf>) -> Result<(), String> {
 
 impl eframe::App for KineticsStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::brand::draw_standalone_footer(ctx, &mut self.about_open);
         self.draw_panels(ctx);
     }
 }
@@ -211,7 +224,7 @@ impl KineticsStudioApp {
     pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("kinetics_top").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.heading("⚗ OSABT Kinetics");
+                ui.heading("OSABT Kinetics");
                 ui.separator();
                 if ui
                     .selectable_label(
@@ -242,35 +255,59 @@ impl KineticsStudioApp {
                 }
                 ui.separator();
                 ui.label("CSV:");
-                ui.add(egui::TextEdit::singleline(&mut self.csv_path_input).desired_width(185.0));
+                ui.add(egui::TextEdit::singleline(&mut self.csv_path_input).desired_width(160.0));
+                if ui.button("Browse...").clicked() {
+                    if let Some(p) = pick_open_file("Open Kinetics CSV", "CSV / TSV", &["csv", "tsv", "txt"]) {
+                        self.csv_path_input = p.to_string_lossy().to_string();
+                        self.load_csv_file(&p);
+                    }
+                }
                 if ui.button("Load").clicked() && !self.csv_path_input.trim().is_empty() {
                     let p = PathBuf::from(self.csv_path_input.trim());
                     self.load_csv_file(&p);
                 }
-                if ui.button("💾 Export SVGs").clicked() {
-                    let g_svg = render_global_inhibition_svg(
-                        &self.matrix_points,
-                        &self.inh_fits[self.selected_mech_idx],
-                        "Global Kinase Inhibition",
-                    );
-                    let m_svg = render_morrison_svg(
-                        &self.morrison_obs,
-                        &self.morrison_fit,
-                        "Morrison Tight-Binding Titration",
-                    );
-                    if fs::write("kinetics_global_inhibition.svg", g_svg).is_ok()
-                        && fs::write("kinetics_morrison_tight_binding.svg", m_svg).is_ok()
-                    {
-                        self.status_bar = String::from(
-                            "Exported kinetics_global_inhibition.svg and kinetics_morrison_tight_binding.svg!",
+                if ui.button("Export SVGs").clicked() {
+                    if let Some(dir) = pick_folder("Select Folder for Kinetics SVGs") {
+                        let Some(active_fit) = self.inh_fits.get(self.selected_mech_idx).or_else(|| self.inh_fits.first()) else {
+                            self.status_is_error = true;
+                            self.status_bar = String::from("No global inhibition fit available to export.");
+                            return;
+                        };
+                        let g_svg = render_global_inhibition_svg(
+                            &self.matrix_points,
+                            active_fit,
+                            "Global Kinase Inhibition",
                         );
+                        let m_svg = render_morrison_svg(
+                            &self.morrison_obs,
+                            &self.morrison_fit,
+                            "Morrison Tight-Binding Titration",
+                        );
+                        let ok1 = write_text_reported(
+                            &dir.join("kinetics_global_inhibition.svg"),
+                            &g_svg,
+                            &mut self.status_bar,
+                            &mut self.status_is_error,
+                            "Exported global inhibition SVG",
+                        );
+                        if ok1
+                            && write_text_reported(
+                                &dir.join("kinetics_morrison_tight_binding.svg"),
+                                &m_svg,
+                                &mut self.status_bar,
+                                &mut self.status_is_error,
+                                "Exported Morrison SVG",
+                            )
+                        {
+                            self.status_bar = format!("Exported 2 Kinetics SVGs -> {}", dir.display());
+                        }
                     }
                 }
             });
         });
 
         egui::TopBottomPanel::bottom("kinetics_footer").show(ctx, |ui| {
-            ui.label(&self.status_bar);
+            draw_status_banner(ui, &self.status_bar, self.status_is_error);
         });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.mode {
@@ -289,7 +326,14 @@ impl KineticsStudioApp {
         let rect = resp.rect;
         painter.rect_filled(rect, 4.0, Color32::from_rgb(15, 23, 42));
 
-        let fit = &self.inh_fits[self.selected_mech_idx];
+        let Some(fit) = self
+            .inh_fits
+            .get(self.selected_mech_idx)
+            .or_else(|| self.inh_fits.first())
+        else {
+            ui.label("No global inhibition fit available.");
+            return;
+        };
         let pad = 42.0_f32;
         let mid_x = rect.center().x;
         let left_box = egui::Rect::from_min_max(
@@ -520,8 +564,8 @@ impl KineticsStudioApp {
             ui.strong("Vmax");
             ui.strong("Km / K0.5 (µM)");
             ui.strong("n_H / K_si");
-            ui.strong("kcat (s⁻¹)");
-            ui.strong("kcat/Km (M⁻¹ s⁻¹)");
+            ui.strong("kcat (s^-1)");
+            ui.strong("kcat/Km (M^-1 s^-1)");
             ui.strong("AICc Weight");
             ui.end_row();
 
@@ -557,7 +601,7 @@ impl KineticsStudioApp {
         });
 
         ui.separator();
-        ui.heading("Cheng & Prusoff (1973) Classical IC50 → Ki Calculator");
+        ui.heading("Cheng & Prusoff (1973) Classical IC50 -> Ki Calculator");
         ui.horizontal(|ui| {
             for m in [
                 InhibitionMechanism::Competitive,
@@ -582,5 +626,30 @@ impl KineticsStudioApp {
             conv.computed_ki_nm,
             conv.mechanism.label()
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cycles_all_kinetics_modes_headlessly() {
+        let ctx = egui::Context::default();
+        let mut app = KineticsStudioApp::new(None);
+        for mode in [
+            KineticsMode::GlobalInhibition,
+            KineticsMode::MorrisonTightBinding,
+            KineticsMode::SingleSubstrateAndChengPrusoff,
+        ] {
+            app.mode = mode;
+            for frame in 0..2 {
+                let mut raw = egui::RawInput::default();
+                raw.screen_rect = Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0)));
+                raw.time = Some(frame as f64 / 60.0);
+                let out = ctx.run(raw, |c| app.draw_panels(c));
+                assert!(!out.shapes.is_empty());
+            }
+        }
     }
 }

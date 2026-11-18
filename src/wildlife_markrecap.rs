@@ -139,7 +139,7 @@ pub fn parse_capture_history_csv(raw_csv: &str) -> Result<(Vec<String>, Vec<Vec<
     let mut histories: Vec<Vec<bool>> = Vec::new();
     let mut header_checked = false;
 
-    for (line_idx, line) in raw_csv.lines().enumerate() {
+    for (line_idx, line) in raw_csv.trim_start_matches('\u{feff}').lines().enumerate() {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
             continue;

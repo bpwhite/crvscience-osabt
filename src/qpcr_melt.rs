@@ -65,7 +65,7 @@ pub fn parse_melt_csv(raw: &str) -> Result<Vec<MeltTrace>, String> {
     let mut grouped: BTreeMap<(String, String, String), Vec<(f64, f64)>> = BTreeMap::new();
     let mut header_seen = false;
 
-    for (idx, line) in raw.lines().enumerate() {
+    for (idx, line) in raw.trim_start_matches('\u{feff}').lines().enumerate() {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
             continue;

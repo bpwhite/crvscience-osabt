@@ -149,7 +149,7 @@ pub fn parse_kinetics_csv(raw: &str) -> Result<Vec<KineticsPoint>, String> {
     let mut pts = Vec::new();
     let mut header_checked = false;
 
-    for (idx, line) in raw.lines().enumerate() {
+    for (idx, line) in raw.trim_start_matches('\u{feff}').lines().enumerate() {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
             continue;

@@ -60,7 +60,7 @@ pub struct GpaAnalysis2D {
 /// Parses a Rohlf `tpsDig` `.tps` file containing one or more `LM=K` landmark blocks.
 pub fn parse_tps_landmarks(tps_text: &str) -> Result<Vec<LandmarkSpecimen2D>, String> {
     let mut specimens = Vec::new();
-    let lines: Vec<&str> = tps_text.lines().collect();
+    let lines: Vec<&str> = tps_text.trim_start_matches('\u{feff}').lines().collect();
     let mut i = 0usize;
 
     while i < lines.len() {

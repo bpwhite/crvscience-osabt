@@ -32,6 +32,9 @@ use crate::forge3d_bio::{
     generate_radiolarian_mesh, parse_pdb_atoms, pdb_atoms_to_printable_mesh, PdbPrintStyle,
 };
 use crate::forge3d_mesh::{MeshPrintReport, TriMesh};
+use crate::gui_io::{
+    draw_status_banner, pick_open_file, pick_save_file, write_bytes_reported, write_text_reported,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForgeSourceKind {
@@ -57,6 +60,8 @@ pub struct Forge3dStudioApp {
     mesh: TriMesh,
     report: MeshPrintReport,
     status_bar: String,
+    status_is_error: bool,
+    about_open: bool,
 }
 
 impl Forge3dStudioApp {
@@ -81,6 +86,8 @@ impl Forge3dStudioApp {
             status_bar: String::from(
                 "Drag mouse on 3D viewport to orbit | Scroll to zoom | Export watertight Binary .stl or .3mf for PrusaSlicer / OrcaSlicer.",
             ),
+            status_is_error: false,
+            about_open: false,
         };
         if initial_pdb.is_some() {
             app.source_kind = ForgeSourceKind::PdbMolecule;
@@ -90,6 +97,7 @@ impl Forge3dStudioApp {
     }
 
     fn rebuild_mesh(&mut self) {
+        let mut read_err = false;
         let built = match self.source_kind {
             ForgeSourceKind::PdbMolecule => {
                 let pdb_txt = if self.file_path_input.trim().is_empty() {
@@ -98,6 +106,8 @@ impl Forge3dStudioApp {
                     match fs::read_to_string(&self.file_path_input) {
                         Ok(t) => t,
                         Err(e) => {
+                            read_err = true;
+                            self.status_is_error = true;
                             self.status_bar = format!("PDB read error: {e} (showing demo helix)");
                             demo_alpha_helix_pdb()
                         }
@@ -133,8 +143,12 @@ impl Forge3dStudioApp {
             Ok(m) => {
                 self.report = m.inspect_printability();
                 self.mesh = m;
+                if !read_err {
+                    self.status_is_error = false;
+                }
             }
             Err(err) => {
+                self.status_is_error = true;
                 self.status_bar = err;
             }
         }
@@ -146,6 +160,7 @@ pub fn run_forge3d_gui(initial_pdb: Option<PathBuf>) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 780.0])
+            .with_icon(crate::brand::osabt_icon_data())
             .with_title("OSABT Forge3D — Biomolecule & Morphology-to-STL Studio (GPL-3.0)"),
         ..Default::default()
     };
@@ -159,6 +174,7 @@ pub fn run_forge3d_gui(initial_pdb: Option<PathBuf>) -> Result<(), String> {
 
 impl eframe::App for Forge3dStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::brand::draw_standalone_footer(ctx, &mut self.about_open);
         self.draw_panels(ctx);
     }
 }
@@ -167,12 +183,13 @@ impl Forge3dStudioApp {
     /// Renders all Forge3D Studio panels onto `ctx`.
     pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("forge3d_status").show(ctx, |ui| {
-            ui.label(&self.status_bar);
+            draw_status_banner(ui, &self.status_bar, self.status_is_error);
         });
 
         egui::SidePanel::left("forge3d_controls")
             .default_width(360.0)
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Generator & Slicer Parameters");
                 ui.separator();
 
@@ -211,7 +228,15 @@ impl Forge3dStudioApp {
                 match self.source_kind {
                     ForgeSourceKind::PdbMolecule => {
                         ui.label("PDB File (blank = built-in Alpha-Helix):");
-                        ui.text_edit_singleline(&mut self.file_path_input);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.file_path_input).desired_width(210.0));
+                            if ui.button("Browse...").clicked() {
+                                if let Some(p) = pick_open_file("Open PDB File", "PDB Structure", &["pdb", "ent"]) {
+                                    self.file_path_input = p.to_string_lossy().to_string();
+                                    changed = true;
+                                }
+                            }
+                        });
                         changed |= ui
                             .radio_value(
                                 &mut self.pdb_style,
@@ -247,7 +272,15 @@ impl Forge3dStudioApp {
                     }
                     ForgeSourceKind::CrvVoxelCsv => {
                         ui.label("Voxel CSV Path (`x,y,z,density`):");
-                        ui.text_edit_singleline(&mut self.file_path_input);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.file_path_input).desired_width(210.0));
+                            if ui.button("Browse...").clicked() {
+                                if let Some(p) = pick_open_file("Open Voxel CSV", "CSV", &["csv", "tsv"]) {
+                                    self.file_path_input = p.to_string_lossy().to_string();
+                                    changed = true;
+                                }
+                            }
+                        });
                     }
                 }
 
@@ -270,7 +303,7 @@ impl Forge3dStudioApp {
                 ui.heading("3D Printability & Manifold Audit");
                 let r = &self.report;
                 let badge = if r.is_watertight_manifold {
-                    (Color32::GREEN, "✓ WATERTIGHT 2-MANIFOLD (Slicer Ready)")
+                    (Color32::GREEN, "[OK] WATERTIGHT 2-MANIFOLD (Slicer Ready)")
                 } else {
                     (Color32::YELLOW, "! Open / Non-manifold Edges Detected")
                 };
@@ -289,23 +322,42 @@ impl Forge3dStudioApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Export .stl").clicked() {
-                        let out = format!("{}.stl", self.mesh.name);
-                        if fs::write(&out, self.mesh.to_binary_stl()).is_ok() {
-                            self.status_bar = format!("Saved Binary STL -> ./{out}");
+                        let def = format!("{}.stl", self.mesh.name);
+                        if let Some(path) = pick_save_file("Export Binary STL", &def, "Binary STL", &["stl"]) {
+                            write_bytes_reported(
+                                &path,
+                                &self.mesh.to_binary_stl(),
+                                &mut self.status_bar,
+                                &mut self.status_is_error,
+                                "Saved Binary STL",
+                            );
                         }
                     }
                     if ui.button("Export .3mf").clicked() {
-                        let out = format!("{}.3mf", self.mesh.name);
-                        if fs::write(&out, self.mesh.to_3mf_package()).is_ok() {
-                            self.status_bar = format!("Saved 3MF package -> ./{out}");
+                        let def = format!("{}.3mf", self.mesh.name);
+                        if let Some(path) = pick_save_file("Export 3MF Package", &def, "3MF Archive", &["3mf"]) {
+                            write_bytes_reported(
+                                &path,
+                                &self.mesh.to_3mf_package(),
+                                &mut self.status_bar,
+                                &mut self.status_is_error,
+                                "Saved 3MF package",
+                            );
                         }
                     }
                     if ui.button("Export .obj").clicked() {
-                        let out = format!("{}.obj", self.mesh.name);
-                        if fs::write(&out, self.mesh.to_wavefront_obj()).is_ok() {
-                            self.status_bar = format!("Saved Wavefront OBJ -> ./{out}");
+                        let def = format!("{}.obj", self.mesh.name);
+                        if let Some(path) = pick_save_file("Export Wavefront OBJ", &def, "Wavefront OBJ", &["obj"]) {
+                            write_text_reported(
+                                &path,
+                                &self.mesh.to_wavefront_obj(),
+                                &mut self.status_bar,
+                                &mut self.status_is_error,
+                                "Saved Wavefront OBJ",
+                            );
                         }
                     }
+                });
                 });
             });
 
@@ -413,6 +465,33 @@ impl Forge3dStudioApp {
 
         for (_, pts, fill) in draw_list {
             painter.add(Shape::convex_polygon(pts.to_vec(), fill, stroke));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cycles_all_forge_source_kinds_headlessly() {
+        let ctx = egui::Context::default();
+        let mut app = Forge3dStudioApp::new(None);
+        for kind in [
+            ForgeSourceKind::GielisDiatom,
+            ForgeSourceKind::Radiolarian,
+            ForgeSourceKind::PdbMolecule,
+            ForgeSourceKind::CrvVoxelCsv,
+        ] {
+            app.source_kind = kind;
+            app.rebuild_mesh();
+            for frame in 0..2 {
+                let mut raw = egui::RawInput::default();
+                raw.screen_rect = Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(1280.0, 800.0)));
+                raw.time = Some(frame as f64 / 60.0);
+                let out = ctx.run(raw, |c| app.draw_panels(c));
+                assert!(!out.shapes.is_empty());
+            }
         }
     }
 }

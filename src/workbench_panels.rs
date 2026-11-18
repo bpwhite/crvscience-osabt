@@ -21,8 +21,7 @@
 //! (`#1 Bench`, `#3 DwC`, `#4 Phylo`, `#5 Epi`, `#6 Lexi`, `#9 Plate`,
 //! `#11 InfoEvo`, `#12 qPCR`, `#14 eDNA`, `#15 Wildlife`, `#17 CRISPR`, `#19 Survival`).
 
-use std::collections::HashMap;
-use std::fs;
+use std::collections::{BTreeSet, HashMap};
 
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
@@ -53,12 +52,16 @@ use crate::edna_fastq::{
     FastqRead,
 };
 use crate::epi_models::{
-    demo_outbreak_incidence, estimate_cori_rt, evaluate_diagnostic_cascade,
+    demo_outbreak_incidence, estimate_cori_rt, evaluate_diagnostic_cascade, parse_incidence_series,
     rogan_gladen_prevalence, simulate_seir_rk4, CoriRtConfig, DiagnosticStepInput, SeirParams,
 };
 use crate::epi_power::{
     design_cohort_study, design_test_negative_study, render_power_curve_svg,
     render_rt_epidemic_svg, render_seir_trajectory_svg,
+};
+use crate::gui_io::{
+    draw_status_banner, pick_folder, pick_open_file, pick_save_file, read_text_reported,
+    show_paste_modal, write_text_reported, PasteModalState,
 };
 use crate::infoevo_core::{
     compute_alignment_information, compute_clade_divergence, compute_epistasis_mip_matrix,
@@ -77,19 +80,22 @@ use crate::phylo_core::{parse_phylo_trees, PhyloTree};
 use crate::phylo_render::render_phylo_svg;
 use crate::plate_curve::{
     demo_measured_96well_plate, evaluate_plate_qc_and_normalize, fit_all_plate_compounds,
-    render_4pl_curves_svg,
+    parse_plate_or_dose_csv, render_4pl_curves_svg,
 };
 use crate::plate_layout::{
     export_bench_pipetting_markdown, export_plate_pipetting_csv, generate_randomized_plate,
     render_plate_map_svg, Microplate, PlateFormat, PlatePlanConfig, WellRole,
 };
-use crate::primer_design::{design_pcr_primers, PrimerDesignConfig, PrimerPairCandidate};
+use crate::primer_design::{
+    design_pcr_primers, parse_fasta_or_raw, PrimerDesignConfig, PrimerPairCandidate,
+};
 use crate::qpcr_core::{
     analyze_qpcr_experiment, demo_qpcr_heatshock_plate_csv, parse_qpcr_table,
-    render_qpcr_expression_svg, QpcrDatasetAnalysis, QpcrReactionWell,
+    render_qpcr_expression_svg, QpcrDatasetAnalysis, QpcrReactionWell, QpcrWellRole,
 };
 use crate::qpcr_melt::{
-    analyze_melt_curve, demo_sybr_melt_traces, render_melt_curves_svg, MeltCurveResult,
+    analyze_melt_curve, demo_sybr_melt_traces, parse_melt_csv, render_melt_curves_svg,
+    MeltCurveResult,
 };
 use crate::structure::score_dimer;
 use crate::survival_core::{
@@ -98,8 +104,8 @@ use crate::survival_core::{
     LogRankTestResult,
 };
 use crate::survival_tox::{
-    demo_ecotox_lc50_csv, fit_ecotox_lc50, parse_ecotox_csv, render_survival_and_lc50_svg,
-    DoseResponseLink, EcotoxBioassayPoint, EcotoxLc50Report,
+    demo_ecotox_lc50_csv, fit_ecotox_lc50, format_probit_conc_tick, parse_ecotox_csv,
+    render_survival_and_lc50_svg, DoseResponseLink, EcotoxBioassayPoint, EcotoxLc50Report,
 };
 use crate::thermo::{PolymerasePreset, ReactionConditions};
 use crate::wildlife_markrecap::{
@@ -183,6 +189,33 @@ fn draw_grid_axes(
     painter.rect_stroke(plot, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(71, 85, 105)));
 }
 
+fn write_bundle_reported(
+    dir: &std::path::Path,
+    files: &[(&str, String)],
+    status: &mut String,
+    is_error: &mut bool,
+) {
+    let mut written = 0usize;
+    let mut first_err: Option<String> = None;
+    for (name, content) in files {
+        let path = dir.join(name);
+        let mut s = String::new();
+        let mut err = false;
+        if write_text_reported(&path, content, &mut s, &mut err, "Saved") {
+            written += 1;
+        } else if first_err.is_none() {
+            first_err = Some(s);
+        }
+    }
+    if let Some(err_msg) = first_err {
+        *is_error = true;
+        *status = format!("{err_msg} ({written}/{} files written)", files.len());
+    } else {
+        *is_error = false;
+        *status = format!("Exported {written} files -> {}", dir.display());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // #1 Bench Panel
 // ---------------------------------------------------------------------------
@@ -200,6 +233,8 @@ pub struct BenchPanelState {
     rotor_rpm: f64,
     oligo_nmol: f64,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl BenchPanelState {
@@ -218,9 +253,31 @@ impl BenchPanelState {
             rotor_rpm: 12_000.0,
             oligo_nmol: 25.0,
             status_msg: String::from("Ready — adjust template, polymerase, or target Tm to redesign PCR pairs."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
         };
         s.recompute();
         s
+    }
+
+    pub fn load_template_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        let recs = parse_fasta_or_raw(raw).map_err(|e| e.to_string())?;
+        let Some((id, seq)) = recs.into_iter().next() else {
+            let msg = format!("No DNA sequence found in {label}.");
+            self.status_is_error = true;
+            self.status_msg = msg.clone();
+            return Err(msg);
+        };
+        self.template_seq = seq;
+        self.recompute();
+        if !self.status_is_error {
+            self.status_msg = format!(
+                "Loaded '{id}' ({} bp) from {label}; designed {} primer pairs.",
+                self.template_seq.len(),
+                self.candidates.len()
+            );
+        }
+        Ok(())
     }
 
     fn recompute(&mut self) {
@@ -236,6 +293,7 @@ impl BenchPanelState {
             Ok(list) => {
                 self.candidates = list;
                 self.selected_cand = 0;
+                self.status_is_error = false;
                 self.status_msg = format!(
                     "Designed {} primer pairs ({:?}, target Tm {:.1} C).",
                     self.candidates.len(),
@@ -245,18 +303,45 @@ impl BenchPanelState {
             }
             Err(e) => {
                 self.candidates.clear();
+                self.status_is_error = true;
                 self.status_msg = format!("Primer design error: {e}");
             }
         }
     }
 
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((_, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            let _ = self.load_template_text(&pasted, "pasted FASTA");
+        }
         egui::TopBottomPanel::bottom("bench_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("bench_gui_side").default_width(330.0).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("1. Primer & Master Mix Controls");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Browse .fa/.txt").clicked() {
+                        if let Some(path) = pick_open_file("Open Template FASTA / DNA", "FASTA / Text", &["fa", "fasta", "fna", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+                                let _ = self.load_template_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste...").clicked() {
+                        self.paste_modal.open_for(
+                            0,
+                            "Paste Template FASTA or Raw DNA",
+                            "Enter FASTA (>seq_id) or raw A/C/G/T DNA template sequence.",
+                            &self.template_seq,
+                        );
+                    }
+                    if ui.button("Demo").clicked() {
+                        self.template_seq = DEFAULT_COX1_TEMPLATE.to_string();
+                        self.status_is_error = false;
+                        self.recompute();
+                    }
+                });
                 let mut changed = false;
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Polymerase:");
@@ -275,10 +360,6 @@ impl BenchPanelState {
                 changed |= ui.checkbox(&mut self.include_probe, "Design TaqMan qPCR Probe").changed();
                 ui.label("Template DNA (A/C/G/T):");
                 if ui.add(egui::TextEdit::multiline(&mut self.template_seq).desired_rows(3).desired_width(f32::INFINITY)).changed() {
-                    changed = true;
-                }
-                if ui.button("Reset Demo COI Template").clicked() {
-                    self.template_seq = DEFAULT_COX1_TEMPLATE.to_string();
                     changed = true;
                 }
                 if changed {
@@ -332,10 +413,16 @@ impl BenchPanelState {
                         .get(self.selected_cand)
                         .map(|c| (c.recommended_ta_c, c.amplicon_len_bp))
                         .unwrap_or((62.0, 220));
-                    if let Ok(plan) = build_pcr_master_mix(self.polymerase, self.rxn_count, 25.0, 0.10, 1.0, ta, bp, false) {
-                        let md = plan.to_markdown_sheet("OSABT Bench Workbench");
-                        if fs::write("osabt_bench_sheet.md", md).is_ok() {
-                            self.status_msg = String::from("Exported ./osabt_bench_sheet.md");
+                    match build_pcr_master_mix(self.polymerase, self.rxn_count, 25.0, 0.10, 1.0, ta, bp, false) {
+                        Ok(plan) => {
+                            if let Some(path) = pick_save_file("Export Bench Checklist", "osabt_bench_sheet.md", "Markdown", &["md", "txt"]) {
+                                let md = plan.to_markdown_sheet("OSABT Bench Workbench");
+                                write_text_reported(&path, &md, &mut self.status_msg, &mut self.status_is_error, "Exported bench sheet");
+                            }
+                        }
+                        Err(e) => {
+                            self.status_is_error = true;
+                            self.status_msg = format!("Master mix build error: {e}");
                         }
                     }
                 }
@@ -415,6 +502,8 @@ pub struct DwcPanelState {
     taxon_query: String,
     only_flagged: bool,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl DwcPanelState {
@@ -433,16 +522,63 @@ impl DwcPanelState {
             taxon_query: String::from("Pseudotsuga taxifolia (Poir.) Britton"),
             only_flagged: false,
             status_msg: String::from("Darwin Core linter & CoordinateCleaner ready."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
+        }
+    }
+
+    pub fn load_dwc_text(&mut self, name: &str, raw: &str) -> Result<(), String> {
+        match lint_and_clean_dwc(name, raw, &self.backbone, &DwcCleanConfig::default()) {
+            Ok(ds) => {
+                let sum = ds.summary();
+                self.dataset = ds;
+                self.status_is_error = false;
+                self.status_msg = format!(
+                    "Loaded '{}' ({} records, {} clean, {} errors).",
+                    name, sum.total_records, sum.clean_records, sum.error_count
+                );
+                Ok(())
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("DwC import error: {e}");
+                Err(e)
+            }
         }
     }
 
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((_, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            let _ = self.load_dwc_text("Pasted_DwC_Table", &pasted);
+        }
         egui::TopBottomPanel::bottom("dwc_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         let sum = self.dataset.summary();
         egui::SidePanel::left("dwc_gui_side").default_width(330.0).show(ctx, |ui| {
             ui.heading("Darwin Core Audit Summary");
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Browse CSV/TSV").clicked() {
+                    if let Some(path) = pick_open_file("Open Darwin Core Occurrence CSV/TSV", "Delimited Table", &["csv", "tsv", "txt"]) {
+                        if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Imported_DwC");
+                            let _ = self.load_dwc_text(name, &raw);
+                        }
+                    }
+                }
+                if ui.button("Paste...").clicked() {
+                    self.paste_modal.open_for(
+                        0,
+                        "Paste Darwin Core Occurrence CSV/TSV",
+                        "Expected columns: occurrenceID, scientificName, decimalLatitude, decimalLongitude, eventDate, ...",
+                        DwcDataset::demo_pnw_field_survey_csv(),
+                    );
+                }
+                if ui.button("Demo").clicked() {
+                    let _ = self.load_dwc_text("PNW_Oregon_Demo_Survey", DwcDataset::demo_pnw_field_survey_csv());
+                }
+            });
+            ui.separator();
             ui.monospace(format!("Total Records  : {}", sum.total_records));
             ui.monospace(format!("Clean Records  : {}", sum.clean_records));
             ui.monospace(format!("Georeferenced  : {}", sum.georeferenced_records));
@@ -464,14 +600,15 @@ impl DwcPanelState {
             }
             ui.separator();
             if ui.button("Export DwC-A + GeoJSON + SVG").clicked() {
-                let out_dir = std::path::PathBuf::from("osabt_dwc_bundle");
-                if fs::create_dir_all(&out_dir).is_ok() {
-                    let _ = fs::write(out_dir.join("occurrence.csv"), write_dwc_delimited(&self.dataset, ',', true));
-                    let _ = fs::write(out_dir.join("meta.xml"), generate_dwca_meta_xml(&self.dataset, "occurrence.csv", Some("eml.xml")));
-                    let _ = fs::write(out_dir.join("eml.xml"), generate_dwca_eml_xml(&self.dataset.dataset_name, "CRV Field Team", "CC-BY-4.0"));
-                    let _ = fs::write(out_dir.join("occurrences.geojson"), export_dwc_geojson(&self.dataset));
-                    let _ = fs::write(out_dir.join("spatial_qa_map.svg"), render_dwc_occurrence_map_svg(&self.dataset));
-                    self.status_msg = String::from("Exported DwC-A bundle -> ./osabt_dwc_bundle/");
+                if let Some(out_dir) = pick_folder("Select Folder for DwC-A + GeoJSON + SVG Bundle") {
+                    let files = [
+                        ("occurrence.csv", write_dwc_delimited(&self.dataset, ',', true)),
+                        ("meta.xml", generate_dwca_meta_xml(&self.dataset, "occurrence.csv", Some("eml.xml"))),
+                        ("eml.xml", generate_dwca_eml_xml(&self.dataset.dataset_name, "CRV Field Team", "CC-BY-4.0")),
+                        ("occurrences.geojson", export_dwc_geojson(&self.dataset)),
+                        ("spatial_qa_map.svg", render_dwc_occurrence_map_svg(&self.dataset)),
+                    ];
+                    write_bundle_reported(&out_dir, &files, &mut self.status_msg, &mut self.status_is_error);
                 }
             }
         });
@@ -556,6 +693,8 @@ pub struct PhyloPanelState {
     ladder_asc: bool,
     search: String,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl PhyloPanelState {
@@ -569,25 +708,61 @@ impl PhyloPanelState {
             ladder_asc: true,
             search: String::new(),
             status_msg: String::from("Loaded Vertebrate Amniote Phylogeny — click buttons to reroot, ladderize, or parse Newick."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
+        }
+    }
+
+    pub fn load_tree_text(&mut self, name: &str, raw: &str) -> Result<(), String> {
+        match parse_phylo_trees(name, raw) {
+            Ok(mut list) if !list.is_empty() => {
+                self.tree = list.remove(0);
+                self.newick_input = raw.to_string();
+                self.status_is_error = false;
+                self.status_msg = format!("Parsed tree '{name}' ({} nodes).", self.tree.nodes.len());
+                Ok(())
+            }
+            Ok(_) => {
+                let msg = String::from("No trees found in Newick/NEXUS input.");
+                self.status_is_error = true;
+                self.status_msg = msg.clone();
+                Err(msg)
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("Parse error: {e}");
+                Err(e)
+            }
         }
     }
 
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((_, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            let _ = self.load_tree_text("PastedTree", &pasted);
+        }
         egui::TopBottomPanel::bottom("phylo_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("phylo_gui_side").default_width(310.0).show(ctx, |ui| {
             ui.heading("Phylogeny Controls");
             ui.checkbox(&mut self.proportional, "Proportional Branch Lengths (Phylogram)");
             ui.horizontal(|ui| {
                 if ui.button("Midpoint Reroot").clicked() {
-                    if let Ok(d) = self.tree.midpoint_reroot() {
-                        self.status_msg = format!("Midpoint rerooted (diameter = {d:.4}).");
+                    match self.tree.midpoint_reroot() {
+                        Ok(d) => {
+                            self.status_is_error = false;
+                            self.status_msg = format!("Midpoint rerooted (diameter = {d:.4}).");
+                        }
+                        Err(e) => {
+                            self.status_is_error = true;
+                            self.status_msg = format!("Reroot error: {e}");
+                        }
                     }
                 }
                 if ui.button("Ladderize").clicked() {
                     self.ladder_asc = !self.ladder_asc;
                     self.tree.ladderize(self.ladder_asc);
+                    self.status_is_error = false;
                     self.status_msg = format!("Ladderized ({}).", if self.ladder_asc { "asc" } else { "desc" });
                 }
             });
@@ -596,30 +771,44 @@ impl PhyloPanelState {
                 ui.text_edit_singleline(&mut self.search);
             });
             ui.separator();
-            ui.label("Newick String:");
-            ui.add(egui::TextEdit::multiline(&mut self.newick_input).desired_rows(4).desired_width(f32::INFINITY));
-            ui.horizontal(|ui| {
-                if ui.button("Parse Newick").clicked() {
-                    match parse_phylo_trees("CustomTree", &self.newick_input) {
-                        Ok(mut list) if !list.is_empty() => {
-                            self.tree = list.remove(0);
-                            self.status_msg = String::from("Parsed custom Newick tree.");
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Browse .nwk/.nex").clicked() {
+                    if let Some(path) = pick_open_file("Open Newick or NEXUS Tree", "Tree Files", &["nwk", "tre", "tree", "nex", "nexus", "txt"]) {
+                        if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("ImportedTree");
+                            let _ = self.load_tree_text(name, &raw);
                         }
-                        Ok(_) => self.status_msg = String::from("No trees found."),
-                        Err(e) => self.status_msg = format!("Parse error: {e}"),
                     }
                 }
-                if ui.button("Demo Tree").clicked() {
+                if ui.button("Paste...").clicked() {
+                    self.paste_modal.open_for(
+                        0,
+                        "Paste Newick or NEXUS Tree",
+                        "Supports standard Newick (...) ; or NEXUS #NEXUS trees.",
+                        &self.newick_input,
+                    );
+                }
+                if ui.button("Demo").clicked() {
                     self.tree = PhyloTree::demo_vertebrate_amniotes();
                     self.newick_input = self.tree.to_newick();
+                    self.status_is_error = false;
+                    self.status_msg = String::from("Reset to Vertebrate Amniote demo phylogeny.");
                 }
             });
+            ui.label("Newick String:");
+            ui.add(egui::TextEdit::multiline(&mut self.newick_input).desired_rows(4).desired_width(f32::INFINITY));
+            if ui.button("Parse Newick").clicked() {
+                let raw = self.newick_input.clone();
+                let _ = self.load_tree_text("CustomTree", &raw);
+            }
             ui.separator();
             if ui.button("Export SVG + Newick").clicked() {
-                let s1 = render_phylo_svg(&self.tree, self.proportional, false);
-                let s2 = self.tree.to_newick();
-                if fs::write("osabt_phylo_tree.svg", s1).is_ok() && fs::write("osabt_phylo_tree.nwk", s2).is_ok() {
-                    self.status_msg = String::from("Exported ./osabt_phylo_tree.svg & ./osabt_phylo_tree.nwk");
+                if let Some(out_dir) = pick_folder("Select Folder for Phylogeny SVG + Newick") {
+                    let files = [
+                        ("osabt_phylo_tree.svg", render_phylo_svg(&self.tree, self.proportional, false)),
+                        ("osabt_phylo_tree.nwk", self.tree.to_newick()),
+                    ];
+                    write_bundle_reported(&out_dir, &files, &mut self.status_msg, &mut self.status_is_error);
                 }
             }
         });
@@ -733,6 +922,8 @@ pub struct EpiPanelState {
     ve_or_rr: f64,
     target_power: f64,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl EpiPanelState {
@@ -750,12 +941,33 @@ impl EpiPanelState {
             ve_or_rr: 0.60,
             target_power: 0.80,
             status_msg: String::from("Epidemiology studio ready — switch tabs for Cori Rt, SEIR, Bayes, and Study Power."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
+        }
+    }
+
+    pub fn load_incidence_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        match parse_incidence_series(raw) {
+            Ok(vals) => {
+                self.incidence = vals;
+                self.status_is_error = false;
+                self.status_msg = format!("Loaded {} daily incidence counts from {label}.", self.incidence.len());
+                Ok(())
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("Incidence import error: {e}");
+                Err(e)
+            }
         }
     }
 
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((_, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            let _ = self.load_incidence_text(&pasted, "pasted series");
+        }
         egui::TopBottomPanel::bottom("epi_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("epi_gui_side").default_width(300.0).show(ctx, |ui| {
             ui.heading("Epi Mode & Parameters");
@@ -763,6 +975,31 @@ impl EpiPanelState {
             ui.selectable_value(&mut self.tab, EpiPanelTab::SeirSweep, "2. RK4 SEIR Simulator");
             ui.selectable_value(&mut self.tab, EpiPanelTab::DiagnosticBayes, "3. Diagnostic Bayes");
             ui.selectable_value(&mut self.tab, EpiPanelTab::StudyPower, "4. Cohort & TND Power");
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Browse Incidence CSV").clicked() {
+                    if let Some(path) = pick_open_file("Open Daily Incidence CSV/TXT", "CSV / Text", &["csv", "tsv", "txt"]) {
+                        if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                            let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+                            let _ = self.load_incidence_text(&raw, label);
+                        }
+                    }
+                }
+                if ui.button("Paste...").clicked() {
+                    let prefill = self.incidence.iter().map(|v| format!("{v:.0}")).collect::<Vec<_>>().join("\n");
+                    self.paste_modal.open_for(
+                        0,
+                        "Paste Daily Incidence Series",
+                        "Enter daily case counts (one per line, or date,count CSV using the last numeric column).",
+                        &prefill,
+                    );
+                }
+                if ui.button("Demo").clicked() {
+                    self.incidence = demo_outbreak_incidence();
+                    self.status_is_error = false;
+                    self.status_msg = format!("Reset to demo outbreak incidence ({} days).", self.incidence.len());
+                }
+            });
             ui.separator();
             match self.tab {
                 EpiPanelTab::RenewalRt => {
@@ -788,30 +1025,51 @@ impl EpiPanelState {
             ui.separator();
             if ui.button("Export Active .svg").clicked() {
                 match self.tab {
-                    EpiPanelTab::RenewalRt => {
-                        if let Ok(pts) = estimate_cori_rt(&self.incidence, &self.rt_cfg) {
-                            let _ = fs::write("epi_rt_curve.svg", render_rt_epidemic_svg("Outbreak Rt", &pts));
-                            self.status_msg = String::from("Exported ./epi_rt_curve.svg");
+                    EpiPanelTab::RenewalRt => match estimate_cori_rt(&self.incidence, &self.rt_cfg) {
+                        Ok(pts) => {
+                            if let Some(path) = pick_save_file("Export Cori Rt Curve", "epi_rt_curve.svg", "SVG Image", &["svg"]) {
+                                let svg = render_rt_epidemic_svg("Outbreak Rt", &pts);
+                                write_text_reported(&path, &svg, &mut self.status_msg, &mut self.status_is_error, "Exported Rt SVG");
+                            }
                         }
-                    }
-                    EpiPanelTab::SeirSweep => {
-                        if let Ok(sim) = simulate_seir_rk4(&self.seir_params) {
-                            let _ = fs::write("epi_seir_trajectory.svg", render_seir_trajectory_svg(&sim));
-                            self.status_msg = String::from("Exported ./epi_seir_trajectory.svg");
+                        Err(e) => {
+                            self.status_is_error = true;
+                            self.status_msg = format!("Cori Rt error: {e}");
                         }
-                    }
+                    },
+                    EpiPanelTab::SeirSweep => match simulate_seir_rk4(&self.seir_params) {
+                        Ok(sim) => {
+                            if let Some(path) = pick_save_file("Export SEIR Trajectory", "epi_seir_trajectory.svg", "SVG Image", &["svg"]) {
+                                let svg = render_seir_trajectory_svg(&sim);
+                                write_text_reported(&path, &svg, &mut self.status_msg, &mut self.status_is_error, "Exported SEIR SVG");
+                            }
+                        }
+                        Err(e) => {
+                            self.status_is_error = true;
+                            self.status_msg = format!("SEIR simulation error: {e}");
+                        }
+                    },
                     EpiPanelTab::StudyPower => {
                         let plan = if self.tnd_mode {
                             design_test_negative_study(self.p0_control, self.ve_or_rr, 2.0, 0.05, self.target_power, Some(0.25))
                         } else {
                             design_cohort_study(self.p0_control.clamp(0.01, 0.45), (1.0 - self.ve_or_rr).clamp(0.1, 0.95), 2.0, 0.05, self.target_power)
                         };
-                        if let Ok(pl) = plan {
-                            let _ = fs::write("epi_power_curve.svg", render_power_curve_svg(&pl));
-                            self.status_msg = String::from("Exported ./epi_power_curve.svg");
+                        match plan {
+                            Ok(pl) => {
+                                if let Some(path) = pick_save_file("Export Study Power Curve", "epi_power_curve.svg", "SVG Image", &["svg"]) {
+                                    let svg = render_power_curve_svg(&pl);
+                                    write_text_reported(&path, &svg, &mut self.status_msg, &mut self.status_is_error, "Exported Power SVG");
+                                }
+                            }
+                            Err(e) => {
+                                self.status_is_error = true;
+                                self.status_msg = format!("Study power error: {e}");
+                            }
                         }
                     }
                     EpiPanelTab::DiagnosticBayes => {
+                        self.status_is_error = false;
                         self.status_msg = String::from("Diagnostic Bayes table is live; switch to Rt/SEIR/Power to export SVG.");
                     }
                 }
@@ -932,6 +1190,8 @@ pub struct LexiPanelState {
     quiz_idx: usize,
     quiz_revealed: bool,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl LexiPanelState {
@@ -945,15 +1205,79 @@ impl LexiPanelState {
             quiz_idx: 0,
             quiz_revealed: false,
             status_msg: String::from("Type any binomial, clade, or anatomical term to segment Greek/Latin morphemes."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
         }
     }
 
+    pub fn load_terms_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        let mut deck = Vec::new();
+        for line in raw.trim_start_matches('\u{feff}').lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') {
+                continue;
+            }
+            let first = t.split([',', '\t']).next().unwrap_or(t).trim();
+            if first.is_empty() || first.eq_ignore_ascii_case("term") || first.eq_ignore_ascii_case("phrase") {
+                continue;
+            }
+            let dec = decode_biological_phrase(first);
+            if !dec.raw_input.is_empty() {
+                deck.push(dec);
+            }
+        }
+        if deck.is_empty() {
+            let msg = format!("No biological terms found in {label}.");
+            self.status_is_error = true;
+            self.status_msg = msg.clone();
+            return Err(msg);
+        }
+        self.input_phrase = deck[0].raw_input.clone();
+        self.saved_deck = deck;
+        self.quiz_idx = 0;
+        self.quiz_revealed = false;
+        self.status_is_error = false;
+        self.status_msg = format!("Loaded {} terms into study deck from {label}.", self.saved_deck.len());
+        Ok(())
+    }
+
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((_, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            let _ = self.load_terms_text(&pasted, "pasted term list");
+        }
         egui::TopBottomPanel::bottom("lexi_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("lexi_gui_side").default_width(310.0).show(ctx, |ui| {
             ui.heading("Etymology & Flashcard Deck");
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Browse .txt/.csv").clicked() {
+                    if let Some(path) = pick_open_file("Open Term List (.txt / .csv)", "Term List", &["txt", "csv", "tsv"]) {
+                        if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                            let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+                            let _ = self.load_terms_text(&raw, label);
+                        }
+                    }
+                }
+                if ui.button("Paste...").clicked() {
+                    let prefill = demo_etymology_terms().join("\n");
+                    self.paste_modal.open_for(
+                        0,
+                        "Paste Biological Term List",
+                        "Enter one scientific term or binomial per line (or CSV with term in first column).",
+                        &prefill,
+                    );
+                }
+                if ui.button("Demo").clicked() {
+                    let presets = demo_etymology_terms();
+                    self.saved_deck = presets.iter().map(|t| decode_biological_phrase(t)).collect();
+                    self.input_phrase = presets[0].to_string();
+                    self.quiz_idx = 0;
+                    self.quiz_revealed = false;
+                    self.status_is_error = false;
+                    self.status_msg = format!("Reset to {} demo etymology terms.", self.saved_deck.len());
+                }
+            });
             ui.horizontal_wrapped(|ui| {
                 for preset in demo_etymology_terms() {
                     if ui.button(preset).clicked() {
@@ -985,14 +1309,17 @@ impl LexiPanelState {
                 let d = decode_biological_phrase(&self.input_phrase);
                 if !d.raw_input.is_empty() {
                     self.saved_deck.push(d);
+                    self.status_is_error = false;
                     self.status_msg = format!("Added '{}' (deck = {} cards).", self.input_phrase, self.saved_deck.len());
                 }
             }
             if ui.button("Export Anki .tsv + Study .md").clicked() {
-                let tsv = export_anki_flashcards_tsv(&self.saved_deck, "OSABT_Etymology");
-                let md = export_flashcards_markdown(&self.saved_deck);
-                if fs::write("osabt_etymology_anki.tsv", tsv).is_ok() && fs::write("osabt_etymology_study.md", md).is_ok() {
-                    self.status_msg = String::from("Exported ./osabt_etymology_anki.tsv & ./osabt_etymology_study.md");
+                if let Some(out_dir) = pick_folder("Select Folder for Anki .tsv + Study .md") {
+                    let files = [
+                        ("osabt_etymology_anki.tsv", export_anki_flashcards_tsv(&self.saved_deck, "OSABT_Etymology")),
+                        ("osabt_etymology_study.md", export_flashcards_markdown(&self.saved_deck)),
+                    ];
+                    write_bundle_reported(&out_dir, &files, &mut self.status_msg, &mut self.status_is_error);
                 }
             }
         });
@@ -1058,6 +1385,8 @@ pub struct PlatePanelState {
     cfg: PlatePlanConfig,
     plate: Microplate,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl PlatePanelState {
@@ -1068,6 +1397,31 @@ impl PlatePanelState {
             cfg,
             plate,
             status_msg: String::from("96/384-Well Edge-Buffered Assay & 4PL IC50/EC50 Studio ready."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
+        }
+    }
+
+    pub fn load_plate_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        match parse_plate_or_dose_csv(raw) {
+            Ok(plate) => {
+                self.cfg.format = plate.format;
+                self.plate = plate;
+                let fits = fit_all_plate_compounds(&self.plate);
+                self.status_is_error = false;
+                self.status_msg = format!(
+                    "Loaded {} plate from {label} ({} wells, {} 4PL curves).",
+                    self.plate.format.label(),
+                    self.plate.wells.len(),
+                    fits.len()
+                );
+                Ok(())
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("Plate CSV import error: {e}");
+                Err(e)
+            }
         }
     }
 
@@ -1099,16 +1453,45 @@ impl PlatePanelState {
             }
             let _ = evaluate_plate_qc_and_normalize(&mut p);
             self.plate = p;
+            self.status_is_error = false;
             self.status_msg = format!("Generated {} randomized plate (seed {}).", self.plate.format.label(), seed);
         }
     }
 
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((_, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            let _ = self.load_plate_text(&pasted, "pasted CSV");
+        }
         egui::TopBottomPanel::bottom("plate_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("plate_gui_side").default_width(300.0).show(ctx, |ui| {
             ui.heading("Plate Format & QC");
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Browse CSV").clicked() {
+                    if let Some(path) = pick_open_file("Open Plate Layout or Dose-Response CSV", "CSV / TSV", &["csv", "tsv", "txt"]) {
+                        if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                            let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+                            let _ = self.load_plate_text(&raw, label);
+                        }
+                    }
+                }
+                if ui.button("Paste...").clicked() {
+                    self.paste_modal.open_for(
+                        0,
+                        "Paste Plate or Dose-Response CSV",
+                        "Accepts OSABT plate CSV (well_id,row,col,role,...) or 3-col CSV (compound,conc_nM,response).",
+                        "compound,conc_nM,response\nCompA,0.1,98\nCompA,1,92\nCompA,10,54\nCompA,100,12\nCompA,1000,3\nCompA,10000,2",
+                    );
+                }
+                if ui.button("Demo").clicked() {
+                    self.cfg = PlatePlanConfig::default();
+                    self.plate = demo_measured_96well_plate();
+                    self.status_is_error = false;
+                    self.status_msg = String::from("Reset to demo 96-well measured plate.");
+                }
+            });
+            ui.separator();
             ui.horizontal(|ui| {
                 if ui.selectable_label(self.cfg.format == PlateFormat::Well96, "96-Well").clicked() {
                     self.cfg.format = PlateFormat::Well96;
@@ -1139,12 +1522,16 @@ impl PlatePanelState {
             }
             ui.separator();
             if ui.button("Export CSV + MD + SVGs").clicked() {
-                let fits = fit_all_plate_compounds(&self.plate);
-                let _ = fs::write("osabt_plate_layout.csv", export_plate_pipetting_csv(&self.plate));
-                let _ = fs::write("osabt_bench_pipetting.md", export_bench_pipetting_markdown(&self.plate, &self.cfg));
-                let _ = fs::write("osabt_plate_heatmap.svg", render_plate_map_svg(&self.plate));
-                let _ = fs::write("osabt_4pl_curves.svg", render_4pl_curves_svg(&self.plate.name, &fits));
-                self.status_msg = String::from("Exported plate CSV, MD, heatmap SVG & 4PL curves SVG.");
+                if let Some(out_dir) = pick_folder("Select Folder for Plate CSV, Protocol & SVGs") {
+                    let fits = fit_all_plate_compounds(&self.plate);
+                    let files = [
+                        ("osabt_plate_layout.csv", export_plate_pipetting_csv(&self.plate)),
+                        ("osabt_bench_pipetting.md", export_bench_pipetting_markdown(&self.plate, &self.cfg)),
+                        ("osabt_plate_heatmap.svg", render_plate_map_svg(&self.plate)),
+                        ("osabt_4pl_curves.svg", render_4pl_curves_svg(&self.plate.name, &fits)),
+                    ];
+                    write_bundle_reported(&out_dir, &files, &mut self.status_msg, &mut self.status_is_error);
+                }
             }
         });
 
@@ -1165,8 +1552,15 @@ impl PlatePanelState {
                         WellRole::NegativeControl => Color32::from_rgb(34, 197, 94),
                         WellRole::PositiveControl => Color32::from_rgb(239, 68, 68),
                         WellRole::CompoundDose => {
-                            let pct = (w.normalized_pct.unwrap_or(50.0) / 100.0).clamp(0.0, 1.0) as f32;
-                            Color32::from_rgb((250.0 * (1.0 - pct)) as u8 + 40, (200.0 * pct) as u8 + 40, 220)
+                            let raw_pct = w.normalized_pct.unwrap_or(50.0);
+                            let pct = if raw_pct.is_finite() {
+                                (raw_pct / 100.0).clamp(0.0, 1.0) as f32
+                            } else {
+                                0.5
+                            };
+                            let r = (215.0 * (1.0 - pct) + 40.0).round().clamp(40.0, 255.0) as u8;
+                            let g = (200.0 * pct + 40.0).round().clamp(40.0, 240.0) as u8;
+                            Color32::from_rgb(r, g, 220)
                         }
                         WellRole::Empty => Color32::from_rgb(51, 65, 85),
                     };
@@ -1223,6 +1617,8 @@ pub struct InfoEvoPanelState {
     sel_coeff_s: f64,
     kimura: KimuraSelectionReport,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl InfoEvoPanelState {
@@ -1245,15 +1641,66 @@ impl InfoEvoPanelState {
             sel_coeff_s,
             kimura,
             status_msg: String::from("Schneider Sequence Logo, Adami Complexity, MIp Epistasis & Kimura Regret ready."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
+        }
+    }
+
+    pub fn load_fasta_text(&mut self, title: &str, raw: &str) -> Result<(), String> {
+        match parse_fasta_alignment(title, raw) {
+            Ok(aln) => {
+                self.info = compute_alignment_information(&aln, self.small_sample_corr, Some((4_600_000.0, 4_500.0)));
+                self.epistasis = compute_epistasis_mip_matrix(&aln, 0.30, 20);
+                self.divergence = compute_clade_divergence(&aln, "", "").ok();
+                self.aln = aln;
+                self.status_is_error = false;
+                self.status_msg = format!(
+                    "Loaded alignment '{}' ({} seqs x {} sites).",
+                    title,
+                    self.aln.records.len(),
+                    self.info.sites.len()
+                );
+                Ok(())
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("FASTA alignment error: {e}");
+                Err(e)
+            }
         }
     }
 
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((_, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            let _ = self.load_fasta_text("Pasted_Alignment", &pasted);
+        }
         egui::TopBottomPanel::bottom("infoevo_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("infoevo_gui_side").default_width(300.0).show(ctx, |ui| {
             ui.heading("ITME & Logo Controls");
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Browse FASTA").clicked() {
+                    if let Some(path) = pick_open_file("Open Aligned Multi-FASTA", "FASTA Alignment", &["fa", "fasta", "aln", "fna", "txt"]) {
+                        if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                            let title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Imported_Alignment");
+                            let _ = self.load_fasta_text(title, &raw);
+                        }
+                    }
+                }
+                if ui.button("Paste...").clicked() {
+                    self.paste_modal.open_for(
+                        0,
+                        "Paste Aligned Multi-FASTA",
+                        "Provide equal-length aligned sequences in FASTA format (>seq_id).",
+                        demo_ecoli_promoter_and_stemloop_fasta(),
+                    );
+                }
+                if ui.button("Demo").clicked() {
+                    let _ = self.load_fasta_text("Ecoli_Pribnow_RNA_StemLoop_Demo", demo_ecoli_promoter_and_stemloop_fasta());
+                }
+            });
+            ui.separator();
             if ui.checkbox(&mut self.small_sample_corr, "Basharin/Schneider e_n Correction").changed() {
                 self.info = compute_alignment_information(&self.aln, self.small_sample_corr, Some((4_600_000.0, 4_500.0)));
             }
@@ -1278,10 +1725,14 @@ impl InfoEvoPanelState {
             }
             ui.separator();
             if ui.button("Export 3 .svg Figures").clicked() {
-                let _ = fs::write("infoevo_sequence_logo.svg", render_sequence_logo_svg(&self.info, &self.aln.title));
-                let _ = fs::write("infoevo_epistasis_mip.svg", render_epistasis_mip_svg(&self.epistasis, &self.info, &self.aln.title));
-                let _ = fs::write("infoevo_kimura_selection.svg", render_kimura_trajectory_svg(&self.kimura, "Kimura Adaptive Sweep"));
-                self.status_msg = String::from("Exported infoevo_sequence_logo.svg, epistasis_mip.svg, kimura_selection.svg");
+                if let Some(out_dir) = pick_folder("Select Folder for InfoEvo SVG Figures") {
+                    let files = [
+                        ("infoevo_sequence_logo.svg", render_sequence_logo_svg(&self.info, &self.aln.title)),
+                        ("infoevo_epistasis_mip.svg", render_epistasis_mip_svg(&self.epistasis, &self.info, &self.aln.title)),
+                        ("infoevo_kimura_selection.svg", render_kimura_trajectory_svg(&self.kimura, "Kimura Adaptive Sweep")),
+                    ];
+                    write_bundle_reported(&out_dir, &files, &mut self.status_msg, &mut self.status_is_error);
+                }
             }
         });
 
@@ -1334,57 +1785,244 @@ impl InfoEvoPanelState {
 pub struct QpcrPanelState {
     wells: Vec<QpcrReactionWell>,
     include_b2m: bool,
+    ref_genes_input: String,
+    calibrator_group: String,
     analysis: QpcrDatasetAnalysis,
     melt_results: Vec<MeltCurveResult>,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl QpcrPanelState {
     pub fn new() -> Self {
         let wells = parse_qpcr_table(demo_qpcr_heatshock_plate_csv()).expect("demo qpcr");
         let refs = vec![String::from("ACTB"), String::from("GAPDH")];
-        let analysis = analyze_qpcr_experiment(&wells, &refs, "Control_37C").expect("demo analysis");
+        let analysis = analyze_qpcr_experiment(&wells, &refs, "Control").expect("demo analysis");
         let melt_results: Vec<MeltCurveResult> = demo_sybr_melt_traces().iter().map(|t| analyze_melt_curve(t, 77.5)).collect();
         Self {
             wells,
             include_b2m: false,
+            ref_genes_input: String::from("ACTB, GAPDH"),
+            calibrator_group: String::from("Control"),
             analysis,
             melt_results,
             status_msg: String::from("MIQE RT-qPCR & SYBR Melt Studio ready — toggle unstable B2M reference to inspect geNorm M."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
+        }
+    }
+
+    pub fn load_qpcr_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        let wells = match parse_qpcr_table(raw) {
+            Ok(w) => w,
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("qPCR table error: {e}");
+                return Err(e);
+            }
+        };
+
+        let mut unknown_groups = BTreeSet::new();
+        let mut all_genes = BTreeSet::new();
+        for w in &wells {
+            all_genes.insert(w.target_gene.clone());
+            if w.role == QpcrWellRole::Unknown {
+                unknown_groups.insert(w.condition_group.clone());
+            }
+        }
+
+        let cal = unknown_groups
+            .iter()
+            .find(|g| {
+                let low = g.to_ascii_lowercase();
+                low.contains("control")
+                    || low.contains("ctrl")
+                    || low.contains("calibrator")
+                    || low.contains("untreated")
+                    || low == "wt"
+            })
+            .or_else(|| unknown_groups.iter().next())
+            .cloned()
+            .unwrap_or_else(|| self.calibrator_group.clone());
+
+        let known_hkgs = ["ACTB", "GAPDH", "18S", "RPL13A", "TBP", "HPRT1", "UBC"];
+        let mut refs: Vec<String> = all_genes
+            .iter()
+            .filter(|g| known_hkgs.iter().any(|h| g.eq_ignore_ascii_case(h)))
+            .cloned()
+            .collect();
+        if refs.len() >= all_genes.len() && all_genes.len() > 1 {
+            refs.truncate(1);
+        }
+        if refs.is_empty() {
+            if let Some(first) = all_genes.iter().next() {
+                refs.push(first.clone());
+            }
+        }
+
+        match analyze_qpcr_experiment(&wells, &refs, &cal) {
+            Ok(rep) => {
+                self.wells = wells;
+                self.calibrator_group = cal;
+                self.ref_genes_input = refs.join(", ");
+                self.include_b2m = refs.iter().any(|r| r.eq_ignore_ascii_case("B2M"));
+                self.analysis = rep;
+                self.status_is_error = false;
+                self.status_msg = format!(
+                    "Loaded {} qPCR wells from {label} (cal='{}', refs={}).",
+                    self.wells.len(),
+                    self.calibrator_group,
+                    self.ref_genes_input
+                );
+                Ok(())
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("qPCR analysis error: {e}");
+                Err(e)
+            }
+        }
+    }
+
+    pub fn load_melt_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        match parse_melt_csv(raw) {
+            Ok(traces) => {
+                self.melt_results = traces.iter().map(|t| analyze_melt_curve(t, 77.5)).collect();
+                self.status_is_error = false;
+                self.status_msg = format!("Loaded {} SYBR melt traces from {label}.", self.melt_results.len());
+                Ok(())
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("Melt CSV error: {e}");
+                Err(e)
+            }
+        }
+    }
+
+    fn apply_refs_and_calibrator(&mut self) {
+        let refs: Vec<String> = self
+            .ref_genes_input
+            .split([',', ';', ' '])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        if refs.is_empty() {
+            self.status_is_error = true;
+            self.status_msg = String::from("Enter at least one reference gene name.");
+            return;
+        }
+        let cal = self.calibrator_group.trim().to_string();
+        match analyze_qpcr_experiment(&self.wells, &refs, &cal) {
+            Ok(rep) => {
+                self.analysis = rep;
+                self.include_b2m = refs.iter().any(|r| r.eq_ignore_ascii_case("B2M"));
+                self.status_is_error = false;
+                self.status_msg = format!("Refs updated: {} (cal='{}')", refs.join(" + "), cal);
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("qPCR analysis error: {e}");
+            }
         }
     }
 
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((slot, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            if slot == 0 {
+                let _ = self.load_qpcr_text(&pasted, "pasted qPCR table");
+            } else {
+                let _ = self.load_melt_text(&pasted, "pasted melt table");
+            }
+        }
         egui::TopBottomPanel::bottom("qpcr_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("qpcr_gui_side").default_width(300.0).show(ctx, |ui| {
-            ui.heading("Reference Genes & geNorm");
-            if ui.checkbox(&mut self.include_b2m, "Include Unstable B2M Reference").changed() {
-                let mut refs = vec![String::from("ACTB"), String::from("GAPDH")];
-                if self.include_b2m {
-                    refs.push(String::from("B2M"));
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Reference Genes & geNorm");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Browse qPCR").clicked() {
+                        if let Some(path) = pick_open_file("Open qPCR Cq Table CSV/TSV", "CSV / TSV", &["csv", "tsv", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+                                let _ = self.load_qpcr_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste qPCR...").clicked() {
+                        self.paste_modal.open_for(
+                            0,
+                            "Paste qPCR Cq Table CSV/TSV",
+                            "Columns: well,sample,group,target,role,cq[,quantity]",
+                            demo_qpcr_heatshock_plate_csv(),
+                        );
+                    }
+                    if ui.button("Browse Melt").clicked() {
+                        if let Some(path) = pick_open_file("Open SYBR Melt Curve CSV/TSV", "CSV / TSV", &["csv", "tsv", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+                                let _ = self.load_melt_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste Melt...").clicked() {
+                        self.paste_modal.open_for(
+                            1,
+                            "Paste SYBR Melt Curve CSV/TSV",
+                            "Columns: well,sample,target,temperature_c,fluorescence",
+                            "well,sample,target,temperature_c,fluorescence\nA1,S1,HSP70,70.0,10000\nA1,S1,HSP70,75.0,9500\nA1,S1,HSP70,80.0,6000\nA1,S1,HSP70,82.0,2200\nA1,S1,HSP70,85.0,900\nA1,S1,HSP70,90.0,500\nA1,S1,HSP70,95.0,450",
+                        );
+                    }
+                    if ui.button("Demo").clicked() {
+                        let _ = self.load_qpcr_text(demo_qpcr_heatshock_plate_csv(), "demo");
+                        self.melt_results = demo_sybr_melt_traces().iter().map(|t| analyze_melt_curve(t, 77.5)).collect();
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Refs:");
+                    ui.add(egui::TextEdit::singleline(&mut self.ref_genes_input).desired_width(140.0));
+                    if ui.button("Apply").clicked() {
+                        self.apply_refs_and_calibrator();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Calibrator:");
+                    ui.add(egui::TextEdit::singleline(&mut self.calibrator_group).desired_width(130.0));
+                });
+                if self.wells.iter().any(|w| w.target_gene.eq_ignore_ascii_case("B2M"))
+                    && ui.checkbox(&mut self.include_b2m, "Include Unstable B2M Reference").changed()
+                {
+                    let mut refs = vec![String::from("ACTB"), String::from("GAPDH")];
+                    if self.include_b2m {
+                        refs.push(String::from("B2M"));
+                    }
+                    self.ref_genes_input = refs.join(", ");
+                    self.apply_refs_and_calibrator();
                 }
-                if let Ok(rep) = analyze_qpcr_experiment(&self.wells, &refs, "Control_37C") {
-                    self.analysis = rep;
-                    self.status_msg = format!("Refs updated: {}", refs.join(" + "));
+                for g in &self.analysis.genorm_rankings {
+                    let col = if g.stable_pass { Color32::from_rgb(52, 211, 153) } else { Color32::from_rgb(248, 113, 113) };
+                    ui.colored_label(col, format!("{} : M = {:.3} ({})", g.gene_name, g.stability_m, if g.stable_pass { "STABLE" } else { "UNSTABLE" }));
                 }
-            }
-            for g in &self.analysis.genorm_rankings {
-                let col = if g.stable_pass { Color32::from_rgb(52, 211, 153) } else { Color32::from_rgb(248, 113, 113) };
-                ui.colored_label(col, format!("{} : M = {:.3} ({})", g.gene_name, g.stability_m, if g.stable_pass { "STABLE" } else { "UNSTABLE" }));
-            }
-            ui.separator();
-            ui.heading("Standard Curves");
-            for sc in &self.analysis.standard_curves {
-                ui.monospace(format!("{}: Eff={:.1}% R2={:.4} [{}]", sc.target_gene, sc.efficiency_pct, sc.r_squared, if sc.miqe_pass { "PASS" } else { "FLAG" }));
-            }
-            ui.separator();
-            if ui.button("Export Expression & Melt .svg").clicked() {
-                let _ = fs::write("qpcr_expression.svg", render_qpcr_expression_svg(&self.analysis, "OSABT RT-qPCR Analysis"));
-                let _ = fs::write("qpcr_melt_curves.svg", render_melt_curves_svg(&self.melt_results, "OSABT SYBR Dissociation"));
-                self.status_msg = String::from("Exported ./qpcr_expression.svg & ./qpcr_melt_curves.svg");
-            }
+                ui.separator();
+                ui.heading("Standard Curves");
+                for sc in &self.analysis.standard_curves {
+                    ui.monospace(format!("{}: Eff={:.1}% R2={:.4} [{}]", sc.target_gene, sc.efficiency_pct, sc.r_squared, if sc.miqe_pass { "PASS" } else { "FLAG" }));
+                }
+                ui.separator();
+                if ui.button("Export Expression & Melt .svg").clicked() {
+                    if let Some(out_dir) = pick_folder("Select Folder for qPCR Expression & Melt SVGs") {
+                        let files = [
+                            ("qpcr_expression.svg", render_qpcr_expression_svg(&self.analysis, "OSABT RT-qPCR Analysis")),
+                            ("qpcr_melt_curves.svg", render_melt_curves_svg(&self.melt_results, "OSABT SYBR Dissociation")),
+                        ];
+                        write_bundle_reported(&out_dir, &files, &mut self.status_msg, &mut self.status_is_error);
+                    }
+                }
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -1433,6 +2071,8 @@ pub struct EdnaPanelState {
     pipeline: EdnaPipelineReport,
     diversity: CommunityDiversityReport,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl EdnaPanelState {
@@ -1451,39 +2091,183 @@ impl EdnaPanelState {
             pipeline,
             diversity,
             status_msg: String::from("eDNA 12S Metabarcoding pipeline ready — adjust maxEE or chimera screening."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
+        }
+    }
+
+    fn rerun_pipeline(&mut self) {
+        self.pipeline = run_edna_metabarcoding_pipeline(&self.reads, &self.barcodes, &self.ref_db, &self.cfg);
+        self.diversity = analyze_edna_community_diversity(&self.pipeline, 10);
+    }
+
+    pub fn load_fastq_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        match parse_fastq_str(raw) {
+            Ok(reads) if !reads.is_empty() => {
+                self.reads = reads;
+                self.rerun_pipeline();
+                self.status_is_error = false;
+                self.status_msg = format!(
+                    "Loaded {} FASTQ reads from {label} -> {} clean ASVs.",
+                    self.reads.len(),
+                    self.diversity.clean_asv_count
+                );
+                Ok(())
+            }
+            Ok(_) => {
+                let msg = format!("No FASTQ reads found in {label}.");
+                self.status_is_error = true;
+                self.status_msg = msg.clone();
+                Err(msg)
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("FASTQ parse error: {e}");
+                Err(e)
+            }
+        }
+    }
+
+    pub fn load_barcodes_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        match parse_barcode_sheet_csv(raw) {
+            Ok(barcodes) => {
+                self.barcodes = barcodes;
+                self.rerun_pipeline();
+                self.status_is_error = false;
+                self.status_msg = format!(
+                    "Loaded {} dual-barcode samples from {label} -> {} clean ASVs.",
+                    self.barcodes.len(),
+                    self.diversity.clean_asv_count
+                );
+                Ok(())
+            }
+            Err(e) => {
+                self.status_is_error = true;
+                self.status_msg = format!("Barcode sheet error: {e}");
+                Err(e)
+            }
+        }
+    }
+
+    pub fn load_refdb_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        match parse_fasta_or_raw(raw) {
+            Ok(db) => {
+                self.ref_db = db;
+                self.rerun_pipeline();
+                self.status_is_error = false;
+                self.status_msg = format!(
+                    "Loaded {} reference sequences from {label}.",
+                    self.ref_db.len()
+                );
+                Ok(())
+            }
+            Err(e) => {
+                let msg = format!("Reference FASTA error: {e}");
+                self.status_is_error = true;
+                self.status_msg = msg.clone();
+                Err(msg)
+            }
         }
     }
 
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((slot, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            match slot {
+                0 => {
+                    let _ = self.load_fastq_text(&pasted, "pasted FASTQ");
+                }
+                1 => {
+                    let _ = self.load_barcodes_text(&pasted, "pasted barcode sheet");
+                }
+                _ => {
+                    let _ = self.load_refdb_text(&pasted, "pasted reference FASTA");
+                }
+            }
+        }
         egui::TopBottomPanel::bottom("edna_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("edna_gui_side").default_width(300.0).show(ctx, |ui| {
-            ui.heading("Pipeline & Denoiser Controls");
-            let mut chg = false;
-            chg |= ui.add(egui::Slider::new(&mut self.cfg.max_expected_errors, 0.25..=6.0).text("Max Expected Errors")).changed();
-            chg |= ui.checkbox(&mut self.cfg.remove_chimeras, "2-Parent Chimera Screen").changed();
-            if chg {
-                self.pipeline = run_edna_metabarcoding_pipeline(&self.reads, &self.barcodes, &self.ref_db, &self.cfg);
-                self.diversity = analyze_edna_community_diversity(&self.pipeline, 10);
-                self.status_msg = format!("Re-denoised: {} clean ASVs.", self.diversity.clean_asv_count);
-            }
-            ui.separator();
-            ui.monospace(format!("Raw Reads   : {}", self.pipeline.total_raw_reads));
-            ui.monospace(format!("Demux Reads : {}", self.pipeline.demux_assigned_reads));
-            ui.monospace(format!("Passed maxEE: {}", self.pipeline.passed_ee_reads));
-            ui.monospace(format!("Chimeras    : {}", self.pipeline.chimeric_reads_flagged));
-            ui.monospace(format!("Clean ASVs  : {}", self.diversity.clean_asv_count));
-            ui.separator();
-            if ui.button("Export ASV .tsv + Rarefaction .svg").clicked() {
-                let _ = fs::write("edna_asv_table.tsv", export_asv_table_tsv(&self.pipeline, false));
-                let _ = fs::write("edna_rarefaction.svg", render_edna_rarefaction_svg(&self.diversity, "PNW 12S eDNA Biodiversity"));
-                self.status_msg = String::from("Exported ./edna_asv_table.tsv & ./edna_rarefaction.svg");
-            }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Pipeline & Denoiser Controls");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Browse FASTQ").clicked() {
+                        if let Some(path) = pick_open_file("Open Raw eDNA FASTQ", "FASTQ", &["fq", "fastq", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("fastq");
+                                let _ = self.load_fastq_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste FASTQ...").clicked() {
+                        let (fq, _, _) = demo_pnw_12s_edna_dataset();
+                        self.paste_modal.open_for(0, "Paste eDNA FASTQ Reads", "4-line Phred+33 FASTQ records.", &fq);
+                    }
+                    if ui.button("Browse Barcodes").clicked() {
+                        if let Some(path) = pick_open_file("Open Barcode Sheet CSV", "CSV / TSV", &["csv", "tsv", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("barcodes");
+                                let _ = self.load_barcodes_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste Barcodes...").clicked() {
+                        let (_, bc, _) = demo_pnw_12s_edna_dataset();
+                        self.paste_modal.open_for(1, "Paste Dual-Barcode CSV", "Columns: sample_id,fwd_barcode,rev_barcode,role", &bc);
+                    }
+                    if ui.button("Browse Ref FA").clicked() {
+                        if let Some(path) = pick_open_file("Open Reference Amplicon FASTA", "FASTA", &["fa", "fasta", "fna", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("ref_db");
+                                let _ = self.load_refdb_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste Ref...").clicked() {
+                        let prefill = self.ref_db.iter().map(|(id, seq)| format!(">{id}\n{seq}")).collect::<Vec<_>>().join("\n");
+                        self.paste_modal.open_for(2, "Paste Reference Amplicon FASTA", "Multi-FASTA (>taxon_id) reference database.", &prefill);
+                    }
+                    if ui.button("Demo").clicked() {
+                        let (fq, bc, db) = demo_pnw_12s_edna_dataset();
+                        self.reads = parse_fastq_str(&fq).expect("demo fastq");
+                        self.barcodes = parse_barcode_sheet_csv(&bc).expect("demo barcodes");
+                        self.ref_db = db;
+                        self.cfg = EdnaPipelineConfig::default();
+                        self.rerun_pipeline();
+                        self.status_is_error = false;
+                        self.status_msg = String::from("Reset to PNW 12S demo eDNA dataset.");
+                    }
+                });
+                ui.separator();
+                let mut chg = false;
+                chg |= ui.add(egui::Slider::new(&mut self.cfg.max_expected_errors, 0.25..=6.0).text("Max Expected Errors")).changed();
+                chg |= ui.checkbox(&mut self.cfg.remove_chimeras, "2-Parent Chimera Screen").changed();
+                if chg {
+                    self.rerun_pipeline();
+                    self.status_is_error = false;
+                    self.status_msg = format!("Re-denoised: {} clean ASVs.", self.diversity.clean_asv_count);
+                }
+                ui.separator();
+                ui.monospace(format!("Raw Reads   : {}", self.pipeline.total_raw_reads));
+                ui.monospace(format!("Demux Reads : {}", self.pipeline.demux_assigned_reads));
+                ui.monospace(format!("Passed maxEE: {}", self.pipeline.passed_ee_reads));
+                ui.monospace(format!("Chimeras    : {}", self.pipeline.chimeric_reads_flagged));
+                ui.monospace(format!("Clean ASVs  : {}", self.diversity.clean_asv_count));
+                ui.separator();
+                if ui.button("Export ASV .tsv + Rarefaction .svg").clicked() {
+                    if let Some(out_dir) = pick_folder("Select Folder for eDNA ASV .tsv & Rarefaction .svg") {
+                        let files = [
+                            ("edna_asv_table.tsv", export_asv_table_tsv(&self.pipeline, false)),
+                            ("edna_rarefaction.svg", render_edna_rarefaction_svg(&self.diversity, "PNW 12S eDNA Biodiversity")),
+                        ];
+                        write_bundle_reported(&out_dir, &files, &mut self.status_msg, &mut self.status_is_error);
+                    }
+                }
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let max_m = self.diversity.rarefaction_curves.iter().flat_map(|c| c.depths_m.iter().copied()).max().unwrap_or(50) as f64;
+            let max_m = self.diversity.rarefaction_curves.iter().flat_map(|c| c.depths_m.iter().copied()).max().unwrap_or(50).max(1) as f64;
             let max_s = self.diversity.rarefaction_curves.iter().flat_map(|c| c.expected_species_sm.iter().copied()).fold(5.0_f64, f64::max) * 1.15;
             let (plot, p) = draw_chart_frame(ui, ui.available_width(), 240.0, "Hurlbert (1971) Analytical Rarefaction E[S_m]");
             draw_grid_axes(&p, plot, 5, 4, (0.0, max_m), (0.0, max_s), |v| format!("{v:.0}"), |v| format!("{v:.1}"));
@@ -1531,6 +2315,8 @@ pub struct WildlifePanelState {
     cost_ratio: f64,
     survey_plan: OccupancySurveyPlan,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl WildlifePanelState {
@@ -1554,39 +2340,123 @@ impl WildlifePanelState {
             cost_ratio,
             survey_plan,
             status_msg: String::from("MacKenzie Occupancy, Closed M0/Mt/Mh & CJS Survival Studio ready."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
         }
     }
 
+    pub fn load_occupancy_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        let rows = parse_occupancy_csv(raw).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("Occupancy CSV error: {e}");
+            e
+        })?;
+        let occ = fit_mackenzie_occupancy_suite(&rows).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("Occupancy model error: {e}");
+            e
+        })?;
+        let best = &occ.models[occ.best_model_index];
+        if let Ok(pl) = plan_occupancy_survey_effort(best.psi_hat.clamp(0.05, 0.95), best.p_hat.clamp(0.05, 0.95), 0.05, self.target_se, self.cost_ratio) {
+            self.survey_plan = pl;
+        }
+        self.occ_report = occ;
+        self.status_is_error = false;
+        self.status_msg = format!("Loaded {} occupancy sites from {label}.", rows.len());
+        Ok(())
+    }
+
+    pub fn load_capture_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        let (k, histories) = parse_capture_history_csv(raw).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("Capture-history CSV error: {e}");
+            e
+        })?;
+        let closed = analyze_closed_capture_histories(&histories).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("Closed capture error: {e}");
+            e
+        })?;
+        let cjs = estimate_cjs_apparent_survival(&histories).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("CJS survival error: {e}");
+            e
+        })?;
+        self.closed_report = closed;
+        self.cjs_report = cjs;
+        self.status_is_error = false;
+        self.status_msg = format!("Loaded {} capture histories ({} occasions) from {label}.", histories.len(), k.len());
+        Ok(())
+    }
+
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((slot, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            if slot == 0 {
+                let _ = self.load_occupancy_text(&pasted, "pasted occupancy CSV");
+            } else {
+                let _ = self.load_capture_text(&pasted, "pasted capture-history CSV");
+            }
+        }
         egui::TopBottomPanel::bottom("wildlife_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("wildlife_gui_side").default_width(310.0).show(ctx, |ui| {
-            ui.heading("Survey Effort Planner");
-            let mut chg = false;
-            chg |= ui.add(egui::Slider::new(&mut self.target_se, 0.02..=0.15).text("Target SE(psi)")).changed();
-            chg |= ui.add(egui::Slider::new(&mut self.cost_ratio, 0.0..=12.0).text("Site/Visit Cost Ratio")).changed();
-            if chg {
-                let best = &self.occ_report.models[self.occ_report.best_model_index];
-                if let Ok(pl) = plan_occupancy_survey_effort(best.psi_hat.clamp(0.05, 0.95), best.p_hat.clamp(0.05, 0.95), 0.05, self.target_se, self.cost_ratio) {
-                    self.survey_plan = pl;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Survey Effort Planner");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Browse Occ CSV").clicked() {
+                        if let Some(path) = pick_open_file("Open Occupancy CSV", "CSV / TSV", &["csv", "tsv", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("occupancy");
+                                let _ = self.load_occupancy_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste Occ...").clicked() {
+                        self.paste_modal.open_for(0, "Paste Occupancy Survey CSV", "Site encounter-history CSV (site_id,v1,v2,...[,covariate]).", demo_pnw_occupancy_csv());
+                    }
+                    if ui.button("Browse Cap CSV").clicked() {
+                        if let Some(path) = pick_open_file("Open Capture-History CSV", "CSV / TSV", &["csv", "tsv", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("capture");
+                                let _ = self.load_capture_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste Cap...").clicked() {
+                        self.paste_modal.open_for(1, "Paste Capture-History CSV", "Individual encounter histories (id,t1,t2,...,tk).", demo_pnw_capture_history_csv());
+                    }
+                    if ui.button("Demo").clicked() {
+                        let _ = self.load_occupancy_text(demo_pnw_occupancy_csv(), "demo");
+                        let _ = self.load_capture_text(demo_pnw_capture_history_csv(), "demo");
+                    }
+                });
+                ui.separator();
+                let mut chg = false;
+                chg |= ui.add(egui::Slider::new(&mut self.target_se, 0.02..=0.15).text("Target SE(psi)")).changed();
+                chg |= ui.add(egui::Slider::new(&mut self.cost_ratio, 0.0..=12.0).text("Site/Visit Cost Ratio")).changed();
+                if chg {
+                    let best = &self.occ_report.models[self.occ_report.best_model_index];
+                    if let Ok(pl) = plan_occupancy_survey_effort(best.psi_hat.clamp(0.05, 0.95), best.p_hat.clamp(0.05, 0.95), 0.05, self.target_se, self.cost_ratio) {
+                        self.survey_plan = pl;
+                    }
                 }
-            }
-            ui.monospace(format!("Optimal Visits K* : {}", self.survey_plan.optimal_k_for_precision));
-            ui.monospace(format!("Required Sites S* : {}", self.survey_plan.required_sites_for_target_se));
-            ui.monospace(format!("Total Visits      : {}", self.survey_plan.total_survey_visits));
-            ui.separator();
-            ui.heading("Open CJS Survival");
-            ui.monospace(format!("Phi (Survival) : {:.3} ± {:.3}", self.cjs_report.phi_hat, self.cjs_report.phi_se));
-            ui.monospace(format!("p (Recapture)  : {:.3} ± {:.3}", self.cjs_report.p_hat, self.cjs_report.p_se));
-            ui.monospace(format!("Chapman LP N   : {:.1} ± {:.1}", self.chapman_demo.chapman_n_hat, self.chapman_demo.seber_se));
-            ui.separator();
-            if ui.button("Export Wildlife .svg").clicked() {
-                let svg = render_wildlife_population_svg(&self.occ_report, &self.closed_report, "PNW Occupancy & Mark-Recapture");
-                if fs::write("wildlife_population.svg", svg).is_ok() {
-                    self.status_msg = String::from("Exported ./wildlife_population.svg");
+                ui.monospace(format!("Optimal Visits K* : {}", self.survey_plan.optimal_k_for_precision));
+                ui.monospace(format!("Required Sites S* : {}", self.survey_plan.required_sites_for_target_se));
+                ui.monospace(format!("Total Visits      : {}", self.survey_plan.total_survey_visits));
+                ui.separator();
+                ui.heading("Open CJS Survival");
+                ui.monospace(format!("Phi (Survival) : {:.3} ± {:.3}", self.cjs_report.phi_hat, self.cjs_report.phi_se));
+                ui.monospace(format!("p (Recapture)  : {:.3} ± {:.3}", self.cjs_report.p_hat, self.cjs_report.p_se));
+                ui.monospace(format!("Chapman LP N   : {:.1} ± {:.1}", self.chapman_demo.chapman_n_hat, self.chapman_demo.seber_se));
+                ui.separator();
+                if ui.button("Export Wildlife .svg").clicked() {
+                    if let Some(path) = pick_save_file("Export Wildlife Population SVG", "wildlife_population.svg", "SVG Image", &["svg"]) {
+                        let svg = render_wildlife_population_svg(&self.occ_report, &self.closed_report, "PNW Occupancy & Mark-Recapture");
+                        write_text_reported(&path, &svg, &mut self.status_msg, &mut self.status_is_error, "Exported Wildlife SVG");
+                    }
                 }
-            }
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -1643,6 +2513,8 @@ pub struct CrisprPanelState {
     offtargets: Vec<Vec<CrisprOffTargetHit>>,
     selected_idx: usize,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl CrisprPanelState {
@@ -1658,68 +2530,152 @@ impl CrisprPanelState {
             offtargets: Vec::new(),
             selected_idx: 0,
             status_msg: String::new(),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
         };
-        s.rescan();
+        let _ = s.rescan();
         s
     }
 
-    fn rescan(&mut self) {
-        if let Ok((norm_seq, mut guides)) = scan_crispr_candidates(&self.target_raw, self.nuclease) {
-            if let Ok(mut hits) = scan_offtargets_and_specificity(&mut guides, &self.bg_raw, 4) {
-                let mut paired: Vec<(CrisprGuideCandidate, Vec<CrisprOffTargetHit>)> = guides.into_iter().zip(hits.drain(..)).collect();
-                paired.sort_by(|a, b| b.0.composite_score.partial_cmp(&a.0.composite_score).unwrap_or(std::cmp::Ordering::Equal));
-                for (i, (g, _)) in paired.iter_mut().enumerate() {
-                    g.guide_id = format!("gRNA_{:02}", i + 1);
-                }
-                let (gs, hs): (Vec<_>, Vec<_>) = paired.into_iter().unzip();
-                self.target_len_bp = norm_seq.len();
-                self.guides = gs;
-                self.offtargets = hs;
-                self.selected_idx = 0;
-                self.status_msg = format!("Scored {} {} guides on {} bp target.", self.guides.len(), self.nuclease.label(), self.target_len_bp);
-            }
+    pub fn load_target_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        let prev = self.target_raw.clone();
+        self.target_raw = raw.to_string();
+        if let Err(e) = self.rescan() {
+            self.target_raw = prev;
+            return Err(e);
         }
+        self.status_msg = format!(
+            "Loaded target ({} bp) from {label}; scored {} {} guides.",
+            self.target_len_bp,
+            self.guides.len(),
+            self.nuclease.label()
+        );
+        Ok(())
+    }
+
+    pub fn load_bg_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        let prev = self.bg_raw.clone();
+        self.bg_raw = raw.to_string();
+        if let Err(e) = self.rescan() {
+            self.bg_raw = prev;
+            return Err(e);
+        }
+        self.status_msg = format!(
+            "Loaded off-target background from {label}; rescored {} guides.",
+            self.guides.len()
+        );
+        Ok(())
+    }
+
+    fn rescan(&mut self) -> Result<(), String> {
+        let (norm_seq, mut guides) = scan_crispr_candidates(&self.target_raw, self.nuclease).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("CRISPR target error: {e}");
+            e
+        })?;
+        let mut hits = scan_offtargets_and_specificity(&mut guides, &self.bg_raw, 4).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("Off-target scan error: {e}");
+            e
+        })?;
+        let mut paired: Vec<(CrisprGuideCandidate, Vec<CrisprOffTargetHit>)> = guides.into_iter().zip(hits.drain(..)).collect();
+        paired.sort_by(|a, b| b.0.composite_score.partial_cmp(&a.0.composite_score).unwrap_or(std::cmp::Ordering::Equal));
+        for (i, (g, _)) in paired.iter_mut().enumerate() {
+            g.guide_id = format!("gRNA_{:02}", i + 1);
+        }
+        let (gs, hs): (Vec<_>, Vec<_>) = paired.into_iter().unzip();
+        self.target_len_bp = norm_seq.len();
+        self.guides = gs;
+        self.offtargets = hs;
+        self.selected_idx = 0;
+        self.status_is_error = false;
+        self.status_msg = format!("Scored {} {} guides on {} bp target.", self.guides.len(), self.nuclease.label(), self.target_len_bp);
+        Ok(())
     }
 
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((slot, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            if slot == 0 {
+                let _ = self.load_target_text(&pasted, "pasted target");
+            } else {
+                let _ = self.load_bg_text(&pasted, "pasted off-target background");
+            }
+        }
         egui::TopBottomPanel::bottom("crispr_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("crispr_gui_side").default_width(310.0).show(ctx, |ui| {
-            ui.heading("CRISPR Nuclease & Vector");
-            let mut chg = false;
-            for n in [CrisprNuclease::SpCas9, CrisprNuclease::SaCas9, CrisprNuclease::LbCas12a] {
-                if ui.selectable_value(&mut self.nuclease, n, n.label()).changed() {
-                    self.vector = match n {
-                        CrisprNuclease::LbCas12a => CrisprCloningVector::LbCas12aBsaI,
-                        _ => CrisprCloningVector::Px459BbsI,
-                    };
-                    chg = true;
-                }
-            }
-            ui.separator();
-            ui.label("Golden Gate Vector:");
-            for v in [CrisprCloningVector::Px459BbsI, CrisprCloningVector::LentiCrisprV2BsmBI, CrisprCloningVector::LbCas12aBsaI] {
-                ui.selectable_value(&mut self.vector, v, v.label());
-            }
-            if chg {
-                self.rescan();
-            }
-            if let Some(g) = self.guides.get(self.selected_idx) {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("CRISPR Nuclease & Vector");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Browse Target FA").clicked() {
+                        if let Some(path) = pick_open_file("Open CRISPR Target FASTA/DNA", "FASTA / Text", &["fa", "fasta", "fna", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("target");
+                                let _ = self.load_target_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste Target...").clicked() {
+                        self.paste_modal.open_for(0, "Paste CRISPR Target FASTA/DNA", "Target sequence >= 30 bp (FASTA or raw A/C/G/T).", &self.target_raw);
+                    }
+                    if ui.button("Browse Off-Target").clicked() {
+                        if let Some(path) = pick_open_file("Open Off-Target Background FASTA", "FASTA / Text", &["fa", "fasta", "fna", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("background");
+                                let _ = self.load_bg_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste BG...").clicked() {
+                        self.paste_modal.open_for(1, "Paste Off-Target Background FASTA", "Multi-FASTA background genome/exome loci for CFD specificity.", &self.bg_raw);
+                    }
+                    if ui.button("Demo").clicked() {
+                        let (t, bg) = demo_crispr_target_and_offtargets();
+                        self.target_raw = t;
+                        self.bg_raw = bg;
+                        let _ = self.rescan();
+                    }
+                });
                 ui.separator();
-                ui.strong(format!("Selected: {} ({} @ {} bp)", g.guide_id, g.strand, g.cut_site_1idx));
-                let ol = design_golden_gate_crispr_oligos(&g.spacer_seq, self.vector);
-                ui.monospace(format!("Top: {}", ol.top_oligo_5to3));
-                ui.monospace(format!("Bot: {}", ol.bottom_oligo_5to3));
-                let be = audit_base_editor_window(&g.spacer_seq);
-                ui.small(format!("CBE C@4..8: {:?} | ABE A@4..8: {:?}", be.cbe_c_positions, be.abe_a_positions));
-            }
-            ui.separator();
-            if ui.button("Export Guides .tsv + Locus .svg").clicked() {
-                let _ = fs::write("crispr_guides.tsv", export_crispr_design_tsv(&self.guides, self.vector));
-                let _ = fs::write("crispr_locus.svg", render_crispr_locus_svg(self.target_len_bp, &self.guides, "OSABT CRISPR Locus Guide Map"));
-                self.status_msg = String::from("Exported ./crispr_guides.tsv & ./crispr_locus.svg");
-            }
+                let mut chg = false;
+                for n in [CrisprNuclease::SpCas9, CrisprNuclease::SaCas9, CrisprNuclease::LbCas12a] {
+                    if ui.selectable_value(&mut self.nuclease, n, n.label()).changed() {
+                        self.vector = match n {
+                            CrisprNuclease::LbCas12a => CrisprCloningVector::LbCas12aBsaI,
+                            _ => CrisprCloningVector::Px459BbsI,
+                        };
+                        chg = true;
+                    }
+                }
+                ui.separator();
+                ui.label("Golden Gate Vector:");
+                for v in [CrisprCloningVector::Px459BbsI, CrisprCloningVector::LentiCrisprV2BsmBI, CrisprCloningVector::LbCas12aBsaI] {
+                    ui.selectable_value(&mut self.vector, v, v.label());
+                }
+                if chg {
+                    let _ = self.rescan();
+                }
+                if let Some(g) = self.guides.get(self.selected_idx) {
+                    ui.separator();
+                    ui.strong(format!("Selected: {} ({} @ {} bp)", g.guide_id, g.strand, g.cut_site_1idx));
+                    let ol = design_golden_gate_crispr_oligos(&g.spacer_seq, self.vector);
+                    ui.monospace(format!("Top: {}", ol.top_oligo_5to3));
+                    ui.monospace(format!("Bot: {}", ol.bottom_oligo_5to3));
+                    let be = audit_base_editor_window(&g.spacer_seq);
+                    ui.small(format!("CBE C@4..8: {:?} | ABE A@4..8: {:?}", be.cbe_c_positions, be.abe_a_positions));
+                }
+                ui.separator();
+                if ui.button("Export Guides .tsv + Locus .svg").clicked() {
+                    if let Some(out_dir) = pick_folder("Select Folder for CRISPR Guides .tsv & Locus .svg") {
+                        let files = [
+                            ("crispr_guides.tsv", export_crispr_design_tsv(&self.guides, self.vector)),
+                            ("crispr_locus.svg", render_crispr_locus_svg(self.target_len_bp, &self.guides, "OSABT CRISPR Locus Guide Map")),
+                        ];
+                        write_bundle_reported(&out_dir, &files, &mut self.status_msg, &mut self.status_is_error);
+                    }
+                }
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -1769,11 +2725,13 @@ pub struct SurvivalPanelState {
     curves: Vec<KaplanMeierCurve>,
     log_rank: Option<LogRankTestResult>,
     cox_cov: CoxPhFit,
-    cox_grp: CoxPhFit,
+    cox_grp: Option<CoxPhFit>,
     ecotox_pts: Vec<EcotoxBioassayPoint>,
     link: DoseResponseLink,
     lc50_report: EcotoxLc50Report,
     status_msg: String,
+    status_is_error: bool,
+    paste_modal: PasteModalState,
 }
 
 impl SurvivalPanelState {
@@ -1782,7 +2740,9 @@ impl SurvivalPanelState {
         let curves = compute_kaplan_meier_curves(&obs);
         let log_rank = compute_log_rank_test(&obs).ok();
         let cox_cov = fit_cox_proportional_hazards(&obs, "Covariate", false).expect("cox cov");
-        let cox_grp = fit_cox_proportional_hazards(&obs, "Group", true).expect("cox grp");
+        let cox_grp = (curves.len() >= 2)
+            .then(|| fit_cox_proportional_hazards(&obs, "Group", true).ok())
+            .flatten();
         let ecotox_pts = parse_ecotox_csv(demo_ecotox_lc50_csv()).expect("demo tox");
         let link = DoseResponseLink::Probit;
         let lc50_report = fit_ecotox_lc50(&ecotox_pts, link).expect("lc50");
@@ -1795,52 +2755,166 @@ impl SurvivalPanelState {
             link,
             lc50_report,
             status_msg: String::from("Kaplan-Meier, Mantel Log-Rank, Cox PH & Finney Probit/Logit LC50 Studio ready."),
+            status_is_error: false,
+            paste_modal: PasteModalState::default(),
         }
     }
 
+    pub fn load_survival_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        let obs = parse_survival_csv(raw).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("Survival CSV error: {e}");
+            e
+        })?;
+        let curves = compute_kaplan_meier_curves(&obs);
+        let log_rank = compute_log_rank_test(&obs).ok();
+        let cox_cov = fit_cox_proportional_hazards(&obs, "Covariate", false).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("Cox covariate PH error: {e}");
+            e
+        })?;
+        let cox_grp = (curves.len() >= 2)
+            .then(|| fit_cox_proportional_hazards(&obs, "Group", true).ok())
+            .flatten();
+        self.curves = curves;
+        self.log_rank = log_rank;
+        self.cox_cov = cox_cov;
+        self.cox_grp = cox_grp;
+        self.status_is_error = false;
+        self.status_msg = format!("Loaded {} subjects ({} strata) from {label}.", obs.len(), self.curves.len());
+        Ok(())
+    }
+
+    pub fn load_ecotox_text(&mut self, raw: &str, label: &str) -> Result<(), String> {
+        let pts = parse_ecotox_csv(raw).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("Ecotox CSV error: {e}");
+            e
+        })?;
+        let rep = fit_ecotox_lc50(&pts, self.link).map_err(|e| {
+            self.status_is_error = true;
+            self.status_msg = format!("LC50 fit error: {e}");
+            e
+        })?;
+        self.ecotox_pts = pts;
+        self.lc50_report = rep;
+        self.status_is_error = false;
+        self.status_msg = format!(
+            "Loaded {} concentrations from {label} ({} LC50 = {:.3} µg/L).",
+            self.ecotox_pts.len(),
+            self.link.label(),
+            self.lc50_report.lc50
+        );
+        Ok(())
+    }
+
     pub fn draw(&mut self, ctx: &egui::Context) {
+        if let Some((slot, pasted)) = show_paste_modal(ctx, &mut self.paste_modal) {
+            if slot == 0 {
+                let _ = self.load_survival_text(&pasted, "pasted cohort CSV");
+            } else {
+                let _ = self.load_ecotox_text(&pasted, "pasted ecotox CSV");
+            }
+        }
         egui::TopBottomPanel::bottom("survival_gui_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
         egui::SidePanel::left("survival_gui_side").default_width(305.0).show(ctx, |ui| {
-            ui.heading("Survival & Ecotox Models");
-            let mut link_changed = false;
-            link_changed |= ui.selectable_value(&mut self.link, DoseResponseLink::Probit, "Finney Probit LC50").changed();
-            link_changed |= ui.selectable_value(&mut self.link, DoseResponseLink::Logit, "Binomial Logit LC50").changed();
-            if link_changed {
-                if let Ok(rep) = fit_ecotox_lc50(&self.ecotox_pts, self.link) {
-                    self.lc50_report = rep;
-                    self.status_msg = format!("{} LC50 = {:.3}", self.link.label(), self.lc50_report.lc50);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Survival & Ecotox Models");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Browse Cohort CSV").clicked() {
+                        if let Some(path) = pick_open_file("Open Survival Cohort CSV/TSV", "CSV / TSV", &["csv", "tsv", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("cohort");
+                                let _ = self.load_survival_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste Cohort...").clicked() {
+                        self.paste_modal.open_for(0, "Paste Survival Cohort CSV", "Columns: subject_id,group,time_days,event[,covariate]", demo_survival_cohort_csv());
+                    }
+                    if ui.button("Browse Ecotox CSV").clicked() {
+                        if let Some(path) = pick_open_file("Open Ecotox Bioassay CSV/TSV", "CSV / TSV", &["csv", "tsv", "txt"]) {
+                            if let Some(raw) = read_text_reported(&path, &mut self.status_msg, &mut self.status_is_error) {
+                                let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("ecotox");
+                                let _ = self.load_ecotox_text(&raw, label);
+                            }
+                        }
+                    }
+                    if ui.button("Paste Ecotox...").clicked() {
+                        self.paste_modal.open_for(1, "Paste Ecotox Bioassay CSV", "Columns: concentration,exposed_n,dead_n", demo_ecotox_lc50_csv());
+                    }
+                    if ui.button("Demo").clicked() {
+                        let _ = self.load_survival_text(demo_survival_cohort_csv(), "demo");
+                        let _ = self.load_ecotox_text(demo_ecotox_lc50_csv(), "demo");
+                    }
+                });
+                ui.separator();
+                let mut link_changed = false;
+                link_changed |= ui.selectable_value(&mut self.link, DoseResponseLink::Probit, "Finney Probit LC50").changed();
+                link_changed |= ui.selectable_value(&mut self.link, DoseResponseLink::Logit, "Binomial Logit LC50").changed();
+                if link_changed {
+                    match fit_ecotox_lc50(&self.ecotox_pts, self.link) {
+                        Ok(rep) => {
+                            self.lc50_report = rep;
+                            self.status_is_error = false;
+                            self.status_msg = format!("{} LC50 = {:.3} µg/L", self.link.label(), self.lc50_report.lc50);
+                        }
+                        Err(e) => {
+                            self.status_is_error = true;
+                            self.status_msg = format!("LC50 fit error: {e}");
+                        }
+                    }
                 }
-            }
-            ui.separator();
-            ui.heading("Mantel Log-Rank & Cox PH");
-            if let Some(lr) = &self.log_rank {
-                ui.monospace(format!("Log-Rank chi^2 = {:.3} (p = {:.5})", lr.chi_square, lr.p_value));
-            }
-            ui.monospace(format!("Group HR = {:.2} (95% CI [{:.2}, {:.2}])", self.cox_grp.hazard_ratio, self.cox_grp.hr_ci95.0, self.cox_grp.hr_ci95.1));
-            ui.monospace(format!("Covar HR = {:.2} (p = {:.4})", self.cox_cov.hazard_ratio, self.cox_cov.p_value));
-            ui.separator();
-            ui.heading("Ecotoxicology Thresholds");
-            ui.monospace(format!("LC10 = {:.3}", self.lc50_report.lc10));
-            ui.strong(format!("LC50 = {:.3} [{:.2}, {:.2}]", self.lc50_report.lc50, self.lc50_report.lc50_ci95.0, self.lc50_report.lc50_ci95.1));
-            ui.monospace(format!("LC90 = {:.3} | chi^2 = {:.2}", self.lc50_report.lc90, self.lc50_report.pearson_chi2));
-            ui.separator();
-            if ui.button("Export Dual-Panel .svg").clicked() {
-                let svg = render_survival_and_lc50_svg(&self.curves, self.log_rank.as_ref(), &self.ecotox_pts, &self.lc50_report, "OSABT Survival & Ecotoxicology");
-                if fs::write("survival_lc50.svg", svg).is_ok() {
-                    self.status_msg = String::from("Exported ./survival_lc50.svg");
+                ui.separator();
+                ui.heading("Mantel Log-Rank & Cox PH");
+                if let Some(lr) = &self.log_rank {
+                    ui.monospace(format!("Log-Rank chi^2 = {:.3} (p = {:.5})", lr.chi_square, lr.p_value));
                 }
-            }
+                if let Some(cg) = &self.cox_grp {
+                    ui.monospace(format!("Group HR = {:.2} (95% CI [{:.2}, {:.2}])", cg.hazard_ratio, cg.hr_ci95.0, cg.hr_ci95.1));
+                } else {
+                    ui.monospace("Group HR = N/A (requires >= 2 strata)");
+                }
+                ui.monospace(format!("Covar HR = {:.2} (p = {:.4})", self.cox_cov.hazard_ratio, self.cox_cov.p_value));
+                ui.separator();
+                ui.heading("Ecotoxicology Thresholds");
+                ui.monospace(format!("LC10 = {:.3} µg/L", self.lc50_report.lc10));
+                ui.strong(format!("LC50 = {:.3} [{:.2}, {:.2}] µg/L", self.lc50_report.lc50, self.lc50_report.lc50_ci95.0, self.lc50_report.lc50_ci95.1));
+                ui.monospace(format!("LC90 = {:.3} µg/L | chi^2 = {:.2}", self.lc50_report.lc90, self.lc50_report.pearson_chi2));
+                ui.separator();
+                if ui.button("Export Dual-Panel .svg").clicked() {
+                    if let Some(path) = pick_save_file("Export Survival & LC50 Dual-Panel SVG", "survival_lc50.svg", "SVG Image", &["svg"]) {
+                        let svg = render_survival_and_lc50_svg(&self.curves, self.log_rank.as_ref(), &self.ecotox_pts, &self.lc50_report, "OSABT Survival & Ecotoxicology");
+                        write_text_reported(&path, &svg, &mut self.status_msg, &mut self.status_is_error, "Exported Survival + LC50 SVG");
+                    }
+                }
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            let plot_h = (ui.available_height() - 180.0).clamp(320.0, 560.0);
             ui.columns(2, |cols| {
                 let max_t = self.curves.iter().flat_map(|c| c.steps.iter().map(|s| s.time)).fold(10.0_f64, f64::max) * 1.05;
                 let w0 = cols[0].available_width();
-                let (p_km, km) = draw_chart_frame(&mut cols[0], w0, 320.0, "Kaplan-Meier Survival S(t) (95% Greenwood CI)");
+                let (p_km, km) = draw_chart_frame(&mut cols[0], w0, plot_h, "Kaplan-Meier Survival S(t) (95% Greenwood CI)");
                 draw_grid_axes(&km, p_km, 5, 5, (0.0, max_t), (0.0, 1.0), |v| format!("{v:.0}d"), |v| format!("{v:.1}"));
                 let map_km = |t: f64, s: f64| Pos2::new(p_km.left() + (t / max_t).clamp(0.0, 1.0) as f32 * p_km.width(), p_km.bottom() - s.clamp(0.0, 1.0) as f32 * p_km.height());
+
+                let y_50 = map_km(0.0, 0.5).y;
+                km.line_segment(
+                    [Pos2::new(p_km.left(), y_50), Pos2::new(p_km.right(), y_50)],
+                    Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(148, 163, 184, 150)),
+                );
+                km.text(
+                    Pos2::new(p_km.right() - 6.0, y_50 - 3.0),
+                    egui::Align2::RIGHT_BOTTOM,
+                    "Median S(t) = 0.50",
+                    egui::FontId::proportional(9.5),
+                    Color32::from_rgb(148, 163, 184),
+                );
+
                 for (ci, curve) in self.curves.iter().enumerate() {
                     let col = PALETTE_ACCENTS[ci % PALETTE_ACCENTS.len()];
                     let band = Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 30);
@@ -1854,6 +2928,11 @@ impl SurvivalPanelState {
                         km.rect_filled(Rect::from_min_max(Pos2::new(tl.x.min(br.x), tl.y.min(br.y)), Pos2::new(tl.x.max(br.x), tl.y.max(br.y))), 0.0, band);
                         pts.push(map_km(st.time, prev_s));
                         pts.push(map_km(st.time, st.survival_s));
+                        if st.n_censored > 0 {
+                            let cp = map_km(st.time, st.survival_s);
+                            km.line_segment([cp - Vec2::new(3.5, 0.0), cp + Vec2::new(3.5, 0.0)], Stroke::new(1.5_f32, col));
+                            km.line_segment([cp - Vec2::new(0.0, 3.5), cp + Vec2::new(0.0, 3.5)], Stroke::new(1.5_f32, col));
+                        }
                         prev_t = st.time;
                         prev_s = st.survival_s;
                         prev_ci = st.ci95;
@@ -1861,11 +2940,57 @@ impl SurvivalPanelState {
                     km.add(Shape::line(pts, Stroke::new(2.4_f32, col)));
                 }
 
-                let min_lx = self.ecotox_pts.first().map(|x| x.concentration.log10()).unwrap_or(-1.0) - 0.3;
-                let max_lx = self.ecotox_pts.last().map(|x| x.concentration.log10()).unwrap_or(2.0) + 0.3;
+                if !self.curves.is_empty() {
+                    let leg_w = 248.0_f32.min((p_km.width() - 20.0).max(160.0));
+                    let leg_h = (self.curves.len() as f32) * 18.0 + 12.0;
+                    let leg_box = Rect::from_min_max(
+                        Pos2::new(p_km.left() + 10.0, p_km.bottom() - 10.0 - leg_h),
+                        Pos2::new(p_km.left() + 10.0 + leg_w, p_km.bottom() - 10.0),
+                    );
+                    km.rect_filled(leg_box, 4.0, Color32::from_rgba_unmultiplied(13, 20, 36, 228));
+                    km.rect_stroke(leg_box, 4.0, Stroke::new(1.0_f32, Color32::from_rgb(71, 85, 105)));
+                    for (ci, curve) in self.curves.iter().enumerate() {
+                        let col = PALETTE_ACCENTS[ci % PALETTE_ACCENTS.len()];
+                        let ly = leg_box.top() + 15.0 + ci as f32 * 18.0;
+                        km.line_segment([Pos2::new(leg_box.left() + 8.0, ly), Pos2::new(leg_box.left() + 26.0, ly)], Stroke::new(2.6_f32, col));
+                        km.text(
+                            Pos2::new(leg_box.left() + 32.0, ly),
+                            egui::Align2::LEFT_CENTER,
+                            format!("{} (n={}, ev={})", curve.group, curve.total_n, curve.total_events),
+                            egui::FontId::proportional(10.5),
+                            Color32::from_rgb(226, 232, 240),
+                        );
+                    }
+                }
+
+                let (lo_lx, hi_lx) = self
+                    .ecotox_pts
+                    .iter()
+                    .filter(|x| x.concentration > 0.0 && x.concentration.is_finite())
+                    .map(|x| x.concentration.log10())
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), lx| (lo.min(lx), hi.max(lx)));
+                let (min_lx, max_lx) = if lo_lx.is_finite() && hi_lx.is_finite() {
+                    (lo_lx - 0.3, hi_lx.max(lo_lx + 1e-3) + 0.3)
+                } else {
+                    (-1.0, 2.0)
+                };
                 let w1 = cols[1].available_width();
-                let (p_tx, tx) = draw_chart_frame(&mut cols[1], w1, 320.0, &format!("{} Dose-Mortality Curve", self.link.label()));
-                draw_grid_axes(&tx, p_tx, 4, 5, (min_lx, max_lx), (0.0, 1.0), |v| format!("10^{v:.1}"), |v| format!("{:.0}%", v * 100.0));
+                let (p_tx, tx) = draw_chart_frame(
+                    &mut cols[1],
+                    w1,
+                    plot_h,
+                    &format!("{} Dose-Mortality Curve (Concentration in µg/L)", self.link.label()),
+                );
+                draw_grid_axes(
+                    &tx,
+                    p_tx,
+                    4,
+                    5,
+                    (min_lx, max_lx),
+                    (0.0, 1.0),
+                    format_probit_conc_tick,
+                    |v| format!("{:.0}%", v * 100.0),
+                );
                 let span_lx = (max_lx - min_lx).max(1e-6);
                 let curve_pts: Vec<Pos2> = (0..=50).map(|k| {
                     let lx = min_lx + span_lx * (k as f64 / 50.0);
@@ -1877,12 +3002,37 @@ impl SurvivalPanelState {
                     Pos2::new(p_tx.left() + ((lx - min_lx) / span_lx) as f32 * p_tx.width(), p_tx.bottom() - pr.clamp(0.0, 1.0) as f32 * p_tx.height())
                 }).collect();
                 tx.add(Shape::line(curve_pts, Stroke::new(2.4_f32, Color32::from_rgb(248, 113, 113))));
+
+                let lc50_lx = self.lc50_report.lc50.log10();
+                if lc50_lx.is_finite() && lc50_lx >= min_lx && lc50_lx <= max_lx {
+                    let x50 = p_tx.left() + ((lc50_lx - min_lx) / span_lx) as f32 * p_tx.width();
+                    let y50 = p_tx.bottom() - 0.5 * p_tx.height();
+                    let ref_stroke = Stroke::new(1.2_f32, Color32::from_rgba_unmultiplied(250, 204, 21, 180));
+                    tx.line_segment([Pos2::new(x50, p_tx.bottom()), Pos2::new(x50, y50)], ref_stroke);
+                    tx.line_segment([Pos2::new(p_tx.left(), y50), Pos2::new(x50, y50)], ref_stroke);
+                    tx.circle_filled(Pos2::new(x50, y50), 4.0, Color32::from_rgb(250, 204, 21));
+                    tx.text(
+                        Pos2::new(x50 + 6.0, y50 + 4.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("LC50 = {:.1} µg/L", self.lc50_report.lc50),
+                        egui::FontId::monospace(10.0),
+                        Color32::from_rgb(250, 204, 21),
+                    );
+                }
+
                 for pt in &self.ecotox_pts {
                     let lx = pt.concentration.log10();
                     let mort = pt.dead_n as f64 / pt.exposed_n.max(1) as f64;
                     let pos = Pos2::new(p_tx.left() + ((lx - min_lx) / span_lx) as f32 * p_tx.width(), p_tx.bottom() - mort.clamp(0.0, 1.0) as f32 * p_tx.height());
                     tx.circle_filled(pos, 5.0, Color32::from_rgb(56, 189, 248));
                 }
+                tx.text(
+                    Pos2::new(p_tx.right() - 6.0, p_tx.bottom() - 6.0),
+                    egui::Align2::RIGHT_BOTTOM,
+                    "Concentration (µg/L)",
+                    egui::FontId::proportional(10.0),
+                    Color32::from_rgb(148, 163, 184),
+                );
             });
 
             ui.add_space(6.0);
@@ -1901,5 +3051,191 @@ impl SurvivalPanelState {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_12_panel_user_importers_parse_valid_and_reject_malformed_inputs() {
+        // 1. Bench
+        let mut bench = BenchPanelState::new();
+        assert!(bench.load_template_text(&format!(">Custom_Seq\n{DEFAULT_COX1_TEMPLATE}"), "test.fa").is_ok());
+        assert!(!bench.status_is_error);
+        assert!(bench.load_template_text("", "empty.fa").is_err());
+
+        // 3. DwC
+        let mut dwc = DwcPanelState::new();
+        assert!(dwc.load_dwc_text("Test_DwC", DwcDataset::demo_pnw_field_survey_csv()).is_ok());
+        assert!(!dwc.status_is_error);
+        assert!(dwc.load_dwc_text("Bad_DwC", "").is_err());
+        assert!(dwc.status_is_error);
+
+        // 4. Phylo
+        let mut phylo = PhyloPanelState::new();
+        assert!(phylo.load_tree_text("Test", "(A:0.1,B:0.2,(C:0.1,D:0.1):0.05);").is_ok());
+        assert!(!phylo.status_is_error);
+        assert!(phylo.load_tree_text("Bad", "not_a_newick_tree").is_err());
+        assert!(phylo.status_is_error);
+
+        // 5. Epi
+        let mut epi = EpiPanelState::new();
+        assert!(epi.load_incidence_text("day,cases\n1,5\n2,8\n3,13\n4,21\n5,34", "epi.csv").is_ok());
+        assert!(!epi.status_is_error);
+        assert!(epi.load_incidence_text("1,2", "short.csv").is_err());
+        assert!(epi.status_is_error);
+
+        // 6. Lexi
+        let mut lexi = LexiPanelState::new();
+        assert!(lexi.load_terms_text("Oncorhynchus tshawytscha\nPseudotsuga menziesii", "terms.txt").is_ok());
+        assert!(!lexi.status_is_error);
+        assert!(lexi.load_terms_text("# comment only\n", "empty.txt").is_err());
+        assert!(lexi.status_is_error);
+
+        // 9. Plate
+        let mut plate = PlatePanelState::new();
+        let csv3 = "compound,conc_nM,response\nCompA,0.1,98\nCompA,1,92\nCompA,10,54\nCompA,100,12\nCompA,1000,3\nCompA,10000,2\n";
+        assert!(plate.load_plate_text(csv3, "dose.csv").is_ok());
+        assert!(!plate.status_is_error);
+        assert!(plate.load_plate_text("bad,csv", "bad.csv").is_err());
+        assert!(plate.status_is_error);
+
+        // 11. InfoEvo
+        let mut info = InfoEvoPanelState::new();
+        assert!(info.load_fasta_text("TestAln", demo_ecoli_promoter_and_stemloop_fasta()).is_ok());
+        assert!(!info.status_is_error);
+        assert!(info.load_fasta_text("BadAln", ">a\nACGT\n>b\nAC\n").is_err());
+        assert!(info.status_is_error);
+
+        // 12. qPCR
+        let mut qpcr = QpcrPanelState::new();
+        assert!(qpcr.load_qpcr_text(demo_qpcr_heatshock_plate_csv(), "qpcr.csv").is_ok());
+        assert!(!qpcr.status_is_error);
+        assert!(qpcr.load_qpcr_text("bad_col1,bad_col2", "bad.csv").is_err());
+        assert!(qpcr.status_is_error);
+        assert!(qpcr.load_melt_text("well,sample,target,temperature_c,fluorescence\nA1,S1,G1,70,1000\nA1,S1,G1,75,900\nA1,S1,G1,80,500\nA1,S1,G1,82,200\nA1,S1,G1,85,100\nA1,S1,G1,90,80\nA1,S1,G1,95,70", "melt.csv").is_ok());
+        assert!(qpcr.load_melt_text("bad", "bad_melt.csv").is_err());
+        assert!(qpcr.status_is_error);
+
+        // 14. eDNA
+        let mut edna = EdnaPanelState::new();
+        let (fq, bc, _) = demo_pnw_12s_edna_dataset();
+        assert!(edna.load_fastq_text(&fq, "reads.fq").is_ok());
+        assert!(edna.load_barcodes_text(&bc, "barcodes.csv").is_ok());
+        assert!(edna.load_refdb_text(">Oncorhynchus_kisutch\nACGTACGTACGTACGTACGTACGT", "ref.fa").is_ok());
+        assert!(!edna.status_is_error);
+        assert!(edna.load_fastq_text("", "empty.fq").is_err());
+        assert!(edna.status_is_error);
+        assert!(edna.load_barcodes_text("", "empty.csv").is_err());
+        assert!(edna.status_is_error);
+
+        // 15. Wildlife
+        let mut wildlife = WildlifePanelState::new();
+        assert!(wildlife.load_occupancy_text(demo_pnw_occupancy_csv(), "occ.csv").is_ok());
+        assert!(wildlife.load_capture_text(demo_pnw_capture_history_csv(), "cap.csv").is_ok());
+        assert!(!wildlife.status_is_error);
+        assert!(wildlife.load_occupancy_text("bad", "bad_occ.csv").is_err());
+        assert!(wildlife.status_is_error);
+        assert!(wildlife.load_capture_text("bad", "bad_cap.csv").is_err());
+        assert!(wildlife.status_is_error);
+
+        // 17. CRISPR
+        let mut crispr = CrisprPanelState::new();
+        let (tgt, bg) = demo_crispr_target_and_offtargets();
+        assert!(crispr.load_target_text(&tgt, "target.fa").is_ok());
+        assert!(crispr.load_bg_text(&bg, "bg.fa").is_ok());
+        assert!(!crispr.status_is_error);
+        assert!(crispr.load_target_text("ACGT", "short.fa").is_err());
+        assert!(crispr.status_is_error);
+
+        // 19. Survival
+        let mut surv = SurvivalPanelState::new();
+        assert!(surv.load_survival_text(demo_survival_cohort_csv(), "cohort.csv").is_ok());
+        assert!(surv.load_ecotox_text(demo_ecotox_lc50_csv(), "tox.csv").is_ok());
+        assert!(!surv.status_is_error);
+        assert!(surv.load_survival_text("bad", "bad_surv.csv").is_err());
+        assert!(surv.status_is_error);
+        assert!(surv.load_ecotox_text("bad", "bad_tox.csv").is_err());
+        assert!(surv.status_is_error);
+    }
+
+    #[test]
+    fn all_12_workbench_panels_and_edge_states_render_in_debug_without_panic() {
+        use super::super::{OsabtWorkbenchApp, ToolId};
+
+        let tools = [
+            ToolId::Bench,
+            ToolId::Dwc,
+            ToolId::Phylo,
+            ToolId::Epi,
+            ToolId::Lexi,
+            ToolId::Plate,
+            ToolId::Infoevo,
+            ToolId::Qpcr,
+            ToolId::Edna,
+            ToolId::Wildlife,
+            ToolId::Crispr,
+            ToolId::Survival,
+        ];
+
+        let ctx = egui::Context::default();
+        let mut app = OsabtWorkbenchApp::new();
+
+        for frame in 0..2 {
+            let mut raw_input = egui::RawInput::default();
+            raw_input.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1480.0, 920.0),
+            ));
+            raw_input.time = Some(frame as f64 / 60.0);
+            let _ = ctx.run(raw_input, |c| app.draw_panels(c));
+        }
+
+        for tool in tools {
+            app.select_tool(tool);
+            for frame in 0..2 {
+                let mut raw_input = egui::RawInput::default();
+                raw_input.screen_rect = Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1480.0, 920.0),
+                ));
+                raw_input.time = Some(frame as f64 / 60.0);
+                let _ = ctx.run(raw_input, |c| app.draw_panels(c));
+            }
+        }
+
+        // PlatePanelState::draw with 0.0% normalized response must never overflow u8
+        let mut plate = PlatePanelState::new();
+        plate
+            .load_plate_text(
+                "compound,conc_nM,response\nCompA,0.1,100\nCompA,1,75\nCompA,10,50\nCompA,100,10\nCompA,1000,0\nCompA,10000,0\n",
+                "zero_pct.csv",
+            )
+            .unwrap();
+        let mut raw_input = egui::RawInput::default();
+        raw_input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0)));
+        let _ = ctx.run(raw_input.clone(), |c| plate.draw(c));
+
+        // EpiPanelState::draw across all 4 tabs
+        let mut epi = EpiPanelState::new();
+        for tab in [
+            EpiPanelTab::RenewalRt,
+            EpiPanelTab::SeirSweep,
+            EpiPanelTab::DiagnosticBayes,
+            EpiPanelTab::StudyPower,
+        ] {
+            epi.tab = tab;
+            let _ = ctx.run(raw_input.clone(), |c| epi.draw(c));
+        }
+
+        // SurvivalPanelState single-stratum cohort -> cox_grp == None, plus unsorted ecotox_pts
+        let mut surv = SurvivalPanelState::new();
+        let single_stratum = "subject_id,group,time_days,event,covariate\nS1,ArmA,5,1,1.0\nS2,ArmA,8,1,2.0\nS3,ArmA,12,0,3.0\nS4,ArmA,15,1,4.0\nS5,ArmA,20,1,5.0\nS6,ArmA,25,0,6.0\n";
+        surv.load_survival_text(single_stratum, "single.csv").unwrap();
+        assert!(surv.cox_grp.is_none());
+        surv.ecotox_pts.reverse();
+        let _ = ctx.run(raw_input, |c| surv.draw(c));
     }
 }

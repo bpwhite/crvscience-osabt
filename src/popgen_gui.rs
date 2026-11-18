@@ -25,6 +25,9 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
+use crate::gui_io::{
+    draw_status_banner, pick_open_file, pick_save_file, read_text_reported, write_text_reported,
+};
 use crate::popgen_core::{
     analyze_diploid_vcf, analyze_popgen_fasta, demo_pnw_popgen_fasta, demo_pnw_popgen_vcf,
     parse_popgen_fasta, parse_popgen_vcf, DiploidVcfReport, PopGenFastaReport,
@@ -48,6 +51,7 @@ pub fn run_popgen_gui(
     let app = PopGenGuiApp::new(fasta_path, vcf_path)?;
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(crate::brand::osabt_icon_data())
             .with_title("OSABT PopGen Studio (v1.6.0) — Median-Joining Networks, Tajima's D & Weir–Cockerham F_ST")
             .with_inner_size([1160.0, 740.0]),
         ..Default::default()
@@ -70,6 +74,8 @@ pub struct PopGenGuiApp {
     network: Option<HaplotypeNetwork>,
     vcf_report: Option<DiploidVcfReport>,
     status_msg: String,
+    status_is_error: bool,
+    about_open: bool,
 }
 
 impl PopGenGuiApp {
@@ -97,6 +103,8 @@ impl PopGenGuiApp {
             network: None,
             vcf_report: None,
             status_msg: String::new(),
+            status_is_error: false,
+            about_open: false,
         };
         app.recompute_all();
         Ok(app)
@@ -109,6 +117,7 @@ impl PopGenGuiApp {
                 self.network = build_median_joining_network(&recs, self.epsilon).ok();
             }
             Err(e) => {
+                self.status_is_error = true;
                 self.status_msg = format!("FASTA error: {e}");
                 return;
             }
@@ -118,11 +127,13 @@ impl PopGenGuiApp {
                 self.vcf_report = analyze_diploid_vcf(&pops, &loci).ok();
             }
             Err(e) => {
+                self.status_is_error = true;
                 self.status_msg = format!("VCF error: {e}");
                 return;
             }
         }
         if let Some(net) = &self.network {
+            self.status_is_error = false;
             self.status_msg = format!(
                 "Computed MJN (epsilon={}): {} sampled haplotypes + {} inferred Median Vectors ({} total mutations).",
                 self.epsilon,
@@ -136,6 +147,7 @@ impl PopGenGuiApp {
 
 impl eframe::App for PopGenGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::brand::draw_standalone_footer(ctx, &mut self.about_open);
         self.draw_panels(ctx);
     }
 }
@@ -144,7 +156,7 @@ impl PopGenGuiApp {
     /// Renders all PopGen Studio panels onto `ctx`.
     pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("popgen_top_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.heading("OSABT PopGen v1.6.0");
                 ui.separator();
                 ui.selectable_value(
@@ -163,6 +175,23 @@ impl PopGenGuiApp {
                     "3. Diploid VCF (Weir–Cockerham F_ST & Exact HWE)",
                 );
                 ui.separator();
+                if ui.button("Open FASTA...").clicked() {
+                    if let Some(p) = pick_open_file("Open Aligned Population FASTA", "FASTA", &["fa", "fasta", "fna", "aln"]) {
+                        if let Some(txt) = read_text_reported(&p, &mut self.status_msg, &mut self.status_is_error) {
+                            self.fasta_text = txt;
+                            self.selected_node = None;
+                            self.recompute_all();
+                        }
+                    }
+                }
+                if ui.button("Open VCF...").clicked() {
+                    if let Some(p) = pick_open_file("Open Diploid VCF", "VCF", &["vcf", "txt"]) {
+                        if let Some(txt) = read_text_reported(&p, &mut self.status_msg, &mut self.status_is_error) {
+                            self.vcf_text = txt;
+                            self.recompute_all();
+                        }
+                    }
+                }
                 if ui
                     .add(egui::Slider::new(&mut self.epsilon, 0..=4).text("MJN epsilon"))
                     .changed()
@@ -171,10 +200,15 @@ impl PopGenGuiApp {
                 }
                 if ui.button("Export Network .svg").clicked() {
                     if let Some(net) = &self.network {
-                        let svg = render_popgen_network_svg(net, "PNW Phylogeography");
-                        if fs::write("popgen_haplotype_network.svg", svg).is_ok() {
-                            self.status_msg =
-                                String::from("Saved popgen_haplotype_network.svg!");
+                        if let Some(path) = pick_save_file("Export Haplotype Network SVG", "popgen_haplotype_network.svg", "SVG Image", &["svg"]) {
+                            let svg = render_popgen_network_svg(net, "PNW Phylogeography");
+                            write_text_reported(
+                                &path,
+                                &svg,
+                                &mut self.status_msg,
+                                &mut self.status_is_error,
+                                "Saved Haplotype Network SVG",
+                            );
                         }
                     }
                 }
@@ -182,7 +216,7 @@ impl PopGenGuiApp {
         });
 
         egui::TopBottomPanel::bottom("popgen_status").show(ctx, |ui| {
-            ui.label(&self.status_msg);
+            draw_status_banner(ui, &self.status_msg, self.status_is_error);
         });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.view {
@@ -211,7 +245,7 @@ impl PopGenGuiApp {
 
         ui.columns(2, |cols| {
             let (resp, painter) = cols[0].allocate_painter(
-                egui::vec2(cols[0].available_width().max(520.0), 580.0),
+                egui::vec2(cols[0].available_width().max(240.0), 580.0),
                 egui::Sense::click(),
             );
             let rect = resp.rect;
@@ -294,7 +328,11 @@ impl PopGenGuiApp {
             for (pi, pop) in net.populations.iter().enumerate() {
                 cols[1].colored_label(COLORS[pi % COLORS.len()], format!("■ {pop}"));
             }
-            cols[1].label("◆ Black Circle = Bandelt Inferred Median Vector (MV)");
+            cols[1].horizontal(|ui| {
+                let (sw_rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                ui.painter().circle_filled(sw_rect.center(), 5.0, egui::Color32::from_rgb(15, 23, 42));
+                ui.label("Black Circle = Bandelt Inferred Median Vector (MV)");
+            });
             cols[1].separator();
             if let Some(sel) = self.selected_node.and_then(|i| net.nodes.get(i)) {
                 cols[1].strong(format!(
@@ -306,7 +344,9 @@ impl PopGenGuiApp {
                         cols[1].label(format!("  • {pop}: {cnt} individuals"));
                     }
                 }
-                cols[1].monospace(&sel.sequence);
+                cols[1].add(
+                    egui::Label::new(egui::RichText::new(&sel.sequence).monospace()).wrap(),
+                );
             } else {
                 cols[1].label("Click any haplotype circle or Median Vector on the canvas to inspect its watershed composition and sequence.");
             }
@@ -406,5 +446,30 @@ impl PopGenGuiApp {
                 ui.end_row();
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cycles_all_popgen_views_headlessly() {
+        let ctx = egui::Context::default();
+        let mut app = PopGenGuiApp::new(None, None).unwrap();
+        for view in [
+            PopGenView::HaplotypeNetworkCanvas,
+            PopGenView::SequenceDiversityAndFst,
+            PopGenView::DiploidVcfStructureAndHwe,
+        ] {
+            app.view = view;
+            for frame in 0..2 {
+                let mut raw = egui::RawInput::default();
+                raw.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0)));
+                raw.time = Some(frame as f64 / 60.0);
+                let out = ctx.run(raw, |c| app.draw_panels(c));
+                assert!(!out.shapes.is_empty());
+            }
+        }
     }
 }

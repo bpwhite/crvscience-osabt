@@ -23,7 +23,7 @@
 //! ecoacoustic biodiversity monitoring.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use egui::{
@@ -38,6 +38,10 @@ use crate::ecosound_dsp::{
 use crate::ecosound_slicer::{
     detect_calls_in_band, export_raven_selection_tsv, render_spectrogram_svg, slice_call_wav_clips,
     BioacousticCallEvent, CallSlicerConfig, SpectrogramPalette,
+};
+use crate::gui_io::{
+    draw_status_banner, pick_folder, pick_open_file, read_bytes_reported, write_bytes_reported,
+    write_text_reported,
 };
 
 /// Interactive `egui` application state for `OSABT EcoSound Studio`.
@@ -56,6 +60,8 @@ pub struct EcosoundStudioApp {
     drag_start_pos: Option<Pos2>,
     selected_event_idx: Option<usize>,
     status_bar: String,
+    status_is_error: bool,
+    about_open: bool,
 }
 
 impl EcosoundStudioApp {
@@ -100,6 +106,8 @@ impl EcosoundStudioApp {
             status_bar: String::from(
                 "Drag on spectrogram to draw custom Raven selection box | Right-click box to delete | Adjust band & click Auto-Detect.",
             ),
+            status_is_error: false,
+            about_open: false,
         };
 
         if let Some(path) = initial_wav {
@@ -108,33 +116,34 @@ impl EcosoundStudioApp {
         app
     }
 
-    fn load_wav_file(&mut self, path: &PathBuf) {
-        match fs::read(path) {
-            Ok(bytes) => {
-                let title = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("recording.wav");
-                match parse_wav_bytes(title, &bytes) {
-                    Ok(rec) => {
-                        let nyq = rec.nyquist_hz();
-                        self.spec_cfg.max_freq_hz = nyq;
-                        self.slicer_cfg.low_freq_hz = (0.08 * nyq).max(200.0);
-                        self.slicer_cfg.high_freq_hz = (0.85 * nyq).max(1_000.0);
-                        self.recording = rec;
-                        self.recompute_spectrogram_and_indices(true);
-                        self.status_bar = format!(
-                            "Loaded '{}' ({:.2} s @ {} Hz, {} selections).",
-                            self.recording.title,
-                            self.recording.duration_seconds(),
-                            self.recording.sample_rate_hz,
-                            self.events.len()
-                        );
-                    }
-                    Err(e) => self.status_bar = format!("WAV parse error: {e}"),
+    fn load_wav_file(&mut self, path: &Path) {
+        if let Some(bytes) = read_bytes_reported(path, &mut self.status_bar, &mut self.status_is_error) {
+            let title = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("recording.wav");
+            match parse_wav_bytes(title, &bytes) {
+                Ok(rec) => {
+                    let nyq = rec.nyquist_hz();
+                    self.spec_cfg.max_freq_hz = nyq;
+                    self.slicer_cfg.low_freq_hz = (0.08 * nyq).max(200.0);
+                    self.slicer_cfg.high_freq_hz = (0.85 * nyq).max(1_000.0);
+                    self.recording = rec;
+                    self.recompute_spectrogram_and_indices(true);
+                    self.status_is_error = false;
+                    self.status_bar = format!(
+                        "Loaded '{}' ({:.2} s @ {} Hz, {} selections).",
+                        self.recording.title,
+                        self.recording.duration_seconds(),
+                        self.recording.sample_rate_hz,
+                        self.events.len()
+                    );
+                }
+                Err(e) => {
+                    self.status_is_error = true;
+                    self.status_bar = format!("WAV parse error: {e}");
                 }
             }
-            Err(e) => self.status_bar = format!("Failed reading '{}': {e}", path.display()),
         }
     }
 
@@ -258,6 +267,7 @@ pub fn run_ecosound_gui(initial_wav: Option<PathBuf>) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
+            .with_icon(crate::brand::osabt_icon_data())
             .with_title(
                 "OSABT EcoSound — Field Bioacoustics Spectrogram, Ecoacoustic Indices & Call Slicer (GPL-3.0)",
             ),
@@ -273,6 +283,7 @@ pub fn run_ecosound_gui(initial_wav: Option<PathBuf>) -> Result<(), String> {
 
 impl eframe::App for EcosoundStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::brand::draw_standalone_footer(ctx, &mut self.about_open);
         self.draw_panels(ctx);
     }
 }
@@ -284,9 +295,9 @@ impl EcosoundStudioApp {
 
         egui::TopBottomPanel::top("ecosound_top_bar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.heading("🦉 OSABT EcoSound");
+                ui.heading("OSABT EcoSound");
                 ui.separator();
-                if ui.button("🌲 Demo: PNW Dawn Chorus (44.1 kHz)").clicked() {
+                if ui.button("Demo: PNW Dawn Chorus (44.1 kHz)").clicked() {
                     self.recording = demo_dawn_chorus_recording();
                     self.spec_cfg.max_freq_hz = 10_000.0;
                     self.slicer_cfg = CallSlicerConfig {
@@ -294,8 +305,9 @@ impl EcosoundStudioApp {
                         ..CallSlicerConfig::default()
                     };
                     self.recompute_spectrogram_and_indices(true);
+                    self.status_is_error = false;
                 }
-                if ui.button("🦇 Demo: Myotis Ultrasonic (192 kHz)").clicked() {
+                if ui.button("Demo: Myotis Ultrasonic (192 kHz)").clicked() {
                     self.recording = demo_ultrasonic_bat_recording();
                     self.spec_cfg.max_freq_hz = 96_000.0;
                     self.slicer_cfg.low_freq_hz = 32_000.0;
@@ -305,10 +317,17 @@ impl EcosoundStudioApp {
                     self.slicer_cfg.merge_gap_ms = 12.0;
                     self.slicer_cfg.species_label = String::from("Myotis lucifugus FM pulse");
                     self.recompute_spectrogram_and_indices(true);
+                    self.status_is_error = false;
                 }
                 ui.separator();
                 ui.label("WAV File:");
-                ui.add(egui::TextEdit::singleline(&mut self.wav_path_input).desired_width(210.0));
+                ui.add(egui::TextEdit::singleline(&mut self.wav_path_input).desired_width(180.0));
+                if ui.button("Browse...").clicked() {
+                    if let Some(p) = pick_open_file("Open WAV Recording", "WAV Audio", &["wav"]) {
+                        self.wav_path_input = p.to_string_lossy().to_string();
+                        self.load_wav_file(&p);
+                    }
+                }
                 if ui.button("Open .wav").clicked() && !self.wav_path_input.trim().is_empty() {
                     let p = PathBuf::from(self.wav_path_input.trim());
                     self.load_wav_file(&p);
@@ -318,7 +337,7 @@ impl EcosoundStudioApp {
 
         egui::TopBottomPanel::bottom("ecosound_status_footer").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(&self.status_bar);
+                draw_status_banner(ui, &self.status_bar, self.status_is_error);
             });
         });
 
@@ -390,7 +409,7 @@ impl EcosoundStudioApp {
                     let nyq = self.recording.nyquist_hz();
                     if ui
                         .add(
-                            egui::Slider::new(&mut self.spec_cfg.max_freq_hz, 1_000.0..=nyq)
+                            egui::Slider::new(&mut self.spec_cfg.max_freq_hz, 1_000.0_f64.min(nyq)..=nyq.max(100.0))
                                 .text("Max View (Hz)"),
                         )
                         .changed()
@@ -413,11 +432,11 @@ impl EcosoundStudioApp {
                     ui.separator();
                     ui.heading("2. Frequency-Band Call Slicer");
                     ui.add(
-                        egui::Slider::new(&mut self.slicer_cfg.low_freq_hz, 50.0..=nyq)
+                        egui::Slider::new(&mut self.slicer_cfg.low_freq_hz, 50.0_f64.min(nyq)..=nyq.max(50.0))
                             .text("Band Low (Hz)"),
                     );
                     ui.add(
-                        egui::Slider::new(&mut self.slicer_cfg.high_freq_hz, 100.0..=nyq)
+                        egui::Slider::new(&mut self.slicer_cfg.high_freq_hz, 100.0_f64.min(nyq)..=nyq.max(100.0))
                             .text("Band High (Hz)"),
                     );
                     ui.add(
@@ -438,11 +457,12 @@ impl EcosoundStudioApp {
                     });
 
                     ui.horizontal(|ui| {
-                        if ui.button("🔍 Auto-Detect Band Calls").clicked() {
+                        if ui.button("Auto-Detect Band Calls").clicked() {
                             self.events =
                                 detect_calls_in_band(&self.spectrogram, &self.slicer_cfg);
                             self.selected_event_idx =
                                 if self.events.is_empty() { None } else { Some(0) };
+                            self.status_is_error = false;
                             self.status_bar = format!(
                                 "Detected {} vocalizations in [{:.0}, {:.0}] Hz.",
                                 self.events.len(),
@@ -493,47 +513,90 @@ impl EcosoundStudioApp {
                     ui.heading("4. Export Clips, Raven TSV & SVG");
                     ui.horizontal(|ui| {
                         ui.label("Out Dir:");
-                        ui.text_edit_singleline(&mut self.export_dir_input);
+                        ui.add(egui::TextEdit::singleline(&mut self.export_dir_input).desired_width(140.0));
+                        if ui.button("Folder...").clicked() {
+                            if let Some(dir) = pick_folder("Select EcoSound Export Folder") {
+                                self.export_dir_input = dir.to_string_lossy().to_string();
+                            }
+                        }
                     });
                     if ui
-                        .button("💾 Export Sliced .wav Clips + Raven TSV + SVG")
+                        .button("Export Sliced .wav Clips + Raven TSV + SVG")
                         .clicked()
                     {
-                        let out_dir = PathBuf::from(self.export_dir_input.trim());
+                        let out_dir = if self.export_dir_input.trim().is_empty() {
+                            match pick_folder("Select EcoSound Export Folder") {
+                                Some(d) => {
+                                    self.export_dir_input = d.to_string_lossy().to_string();
+                                    d
+                                }
+                                None => PathBuf::from("ecosound_exports"),
+                            }
+                        } else {
+                            PathBuf::from(self.export_dir_input.trim())
+                        };
                         if let Err(e) = fs::create_dir_all(&out_dir) {
-                            self.status_bar = format!("Failed creating output dir: {e}");
+                            self.status_is_error = true;
+                            self.status_bar = format!("Failed creating output dir '{}': {e}", out_dir.display());
                         } else {
                             let raven =
                                 export_raven_selection_tsv(&self.events, &self.recording.title);
                             let raven_path = out_dir.join("selections.Raven.1.selections.txt");
-                            let _ = fs::write(&raven_path, raven);
-
-                            let svg = render_spectrogram_svg(
-                                &self.spectrogram,
-                                &self.events,
-                                Some((
-                                    self.slicer_cfg.low_freq_hz,
-                                    self.slicer_cfg.high_freq_hz,
-                                )),
-                                self.palette,
-                                &self.recording.title,
+                            let mut ok = write_text_reported(
+                                &raven_path,
+                                &raven,
+                                &mut self.status_bar,
+                                &mut self.status_is_error,
+                                "Exported Raven TSV",
                             );
-                            let _ = fs::write(out_dir.join("spectrogram_annotated.svg"), svg);
-
-                            let clips = slice_call_wav_clips(
-                                &self.recording,
-                                &self.events,
-                                &self.slicer_cfg,
-                                "call",
-                            );
-                            for (fname, bytes) in &clips {
-                                let _ = fs::write(out_dir.join(fname), bytes);
+                            if ok {
+                                let svg = render_spectrogram_svg(
+                                    &self.spectrogram,
+                                    &self.events,
+                                    Some((
+                                        self.slicer_cfg.low_freq_hz,
+                                        self.slicer_cfg.high_freq_hz,
+                                    )),
+                                    self.palette,
+                                    &self.recording.title,
+                                );
+                                ok = write_text_reported(
+                                    &out_dir.join("spectrogram_annotated.svg"),
+                                    &svg,
+                                    &mut self.status_bar,
+                                    &mut self.status_is_error,
+                                    "Exported SVG",
+                                );
                             }
-                            self.status_bar = format!(
-                                "Exported {} .wav call clips, Raven selection table, and annotated .svg to '{}'.",
-                                clips.len(),
-                                out_dir.display()
-                            );
+                            if ok {
+                                let clips = slice_call_wav_clips(
+                                    &self.recording,
+                                    &self.events,
+                                    &self.slicer_cfg,
+                                    "call",
+                                );
+                                let mut all_ok = true;
+                                for (fname, bytes) in &clips {
+                                    if !write_bytes_reported(
+                                        &out_dir.join(fname),
+                                        bytes,
+                                        &mut self.status_bar,
+                                        &mut self.status_is_error,
+                                        "Exported clip",
+                                    ) {
+                                        all_ok = false;
+                                        break;
+                                    }
+                                }
+                                if all_ok {
+                                    self.status_is_error = false;
+                                    self.status_bar = format!(
+                                        "Exported {} .wav call clips, Raven selection table, and annotated .svg to '{}'.",
+                                        clips.len(),
+                                        out_dir.display()
+                                    );
+                                }
+                            }
                         }
                     }
                 });
@@ -572,9 +635,9 @@ impl EcosoundStudioApp {
             let map_y = |f: f64| {
                 rect.bottom() - (((f - f_min) / f_span).clamp(0.0, 1.0) as f32) * rect.height()
             };
-            let unmap_t = |px: f32| (((px - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64) * dur;
+            let unmap_t = |px: f32| (((px - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0) as f64) * dur;
             let unmap_f = |py: f32| {
-                f_min + (((rect.bottom() - py) / rect.height()).clamp(0.0, 1.0) as f64) * f_span
+                f_min + (((rect.bottom() - py) / rect.height().max(1.0)).clamp(0.0, 1.0) as f64) * f_span
             };
 
             for f_band in [self.slicer_cfg.low_freq_hz, self.slicer_cfg.high_freq_hz] {
@@ -656,12 +719,14 @@ impl EcosoundStudioApp {
             }
 
             if let Some(hover) = resp.hover_pos() {
-                let ht = unmap_t(hover.x);
-                let hf = unmap_f(hover.y);
-                self.status_bar = format!(
-                    "Cursor: t = {ht:.3} s | f = {hf:.0} Hz | Selections: {} (Drag to add box, right-click box to remove)",
-                    self.events.len()
-                );
+                if !self.status_is_error {
+                    let ht = unmap_t(hover.x);
+                    let hf = unmap_f(hover.y);
+                    self.status_bar = format!(
+                        "Cursor: t = {ht:.3} s | f = {hf:.0} Hz | Selections: {} (Drag to add box, right-click box to remove)",
+                        self.events.len()
+                    );
+                }
             }
 
             ui.separator();

@@ -348,6 +348,7 @@ pub struct OsabtWorkbenchApp {
     survival: Option<SurvivalPanelState>,
     visuals_applied: bool,
     init_error: Option<String>,
+    about_open: bool,
 }
 
 impl Default for OsabtWorkbenchApp {
@@ -385,6 +386,7 @@ impl OsabtWorkbenchApp {
             survival: None,
             visuals_applied: false,
             init_error: None,
+            about_open: false,
         }
     }
 
@@ -441,7 +443,7 @@ impl OsabtWorkbenchApp {
                     self.active_tool = None;
                 }
 
-                let rail_lbl = if self.rail_open { "◧ Hide Rail" } else { "☰ Show Rail" };
+                let rail_lbl = if self.rail_open { "<< Hide Rail" } else { ">> Show Rail" };
                 if ui.button(rail_lbl).clicked() {
                     self.rail_open = !self.rail_open;
                 }
@@ -469,7 +471,7 @@ impl OsabtWorkbenchApp {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search_query)
                         .hint_text("Search 20 tools...")
-                        .desired_width(150.0),
+                        .desired_width(135.0),
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -487,6 +489,14 @@ impl OsabtWorkbenchApp {
                         .show(ui, |ui| {
                             ui.label(RichText::new(pill_txt).small().strong().color(Color32::WHITE));
                         });
+                    if ui.button("About").clicked() {
+                        self.about_open = !self.about_open;
+                    }
+                    ui.label(
+                        RichText::new("Copyright CRV Science Network")
+                            .small()
+                            .color(Color32::from_rgb(148, 163, 184)),
+                    );
                 });
             });
             ui.add_space(2.0);
@@ -717,6 +727,7 @@ impl OsabtWorkbenchApp {
         } else {
             self.draw_home_launcher(ctx);
         }
+        crate::brand::draw_about_window(ctx, &mut self.about_open);
     }
 }
 
@@ -732,6 +743,7 @@ pub fn run_workbench_gui() -> Result<(), String> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 920.0])
             .with_min_inner_size([960.0, 640.0])
+            .with_icon(crate::brand::osabt_icon_data())
             .with_title("OSABT v2.0.0 — 20-Tool Biology & Biostatistics Suite (GPL-3.0)"),
         ..Default::default()
     };

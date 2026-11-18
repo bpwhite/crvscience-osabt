@@ -183,7 +183,7 @@ fn load_oligo_tsv(path: &PathBuf) -> Result<Vec<(String, String)>, String> {
     let txt =
         fs::read_to_string(path).map_err(|e| format!("Failed reading '{}': {e}", path.display()))?;
     let mut out = Vec::new();
-    for line in txt.lines() {
+    for line in txt.trim_start_matches('\u{feff}').lines() {
         let l = line.trim();
         if l.is_empty() || l.starts_with('#') {
             continue;

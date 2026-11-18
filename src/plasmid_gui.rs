@@ -22,15 +22,17 @@
 //! and `plasmid_svg` with zero IPC serialization overhead.
 
 use std::f32::consts::PI;
-use std::fs;
 use std::path::PathBuf;
 
 use eframe::egui;
-use egui::{Color32, Pos2, Sense, Shape, Stroke, Vec2};
+use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 
 use crate::gibson::{
     design_gibson_assembly, scan_circular_bindings, CircularBindingSite, GibsonConfig,
     GibsonFragmentInput,
+};
+use crate::gui_io::{
+    draw_status_banner, pick_open_file, pick_save_file, read_bytes_reported, write_text_reported,
 };
 use crate::plasmid_digest::{
     design_goldengate_assembly, find_unique_cutters, simulate_restriction_digest,
@@ -41,7 +43,8 @@ use crate::plasmid_io::{
     write_genbank, PlasmidRecord, SangerTrace, TraceAlignmentResult,
 };
 use crate::plasmid_svg::{
-    gel_migration_fraction, render_plasmid_map_svg, render_virtual_gel_svg, GelLadder, GelLane,
+    gel_migration_fraction, layout_circular_callouts, render_plasmid_map_svg,
+    render_virtual_gel_svg, CircularCalloutInput, GelLadder, GelLane,
 };
 use crate::primer_design::parse_fasta_or_raw;
 use crate::structure::g4_hunter_max_window;
@@ -64,6 +67,8 @@ pub struct PlasmidStudioApp {
     stock_oligos: Vec<(String, String)>,
     bound_primers: Vec<CircularBindingSite>,
     selected_span: (usize, usize),
+    drag_anchor_bp: Option<usize>,
+    selected_feature_idx: Option<usize>,
     active_tab: InspectorTab,
     selected_enzymes: Vec<bool>,
     agarose_pct: f64,
@@ -73,15 +78,30 @@ pub struct PlasmidStudioApp {
     trace_path_input: String,
     last_trace_result: Option<TraceAlignmentResult>,
     status_bar: String,
+    status_is_error: bool,
+    about_open: bool,
 }
 
 impl PlasmidStudioApp {
     pub fn new(initial_file: Option<PathBuf>) -> Self {
-        let record = initial_file
-            .as_ref()
-            .and_then(|p| fs::read(p).ok().map(|b| (p, b)))
-            .and_then(|(p, b)| load_plasmid_bytes(&p.to_string_lossy(), &b).ok())
-            .unwrap_or_else(PlasmidRecord::demo_pcrv_gfp);
+        let mut init_err: Option<String> = None;
+        let record = if let Some(p) = &initial_file {
+            match std::fs::read(p) {
+                Ok(b) => match load_plasmid_bytes(&p.to_string_lossy(), &b) {
+                    Ok(rec) => rec,
+                    Err(e) => {
+                        init_err = Some(format!("Plasmid parse error '{}': {e} (showing demo)", p.display()));
+                        PlasmidRecord::demo_pcrv_gfp()
+                    }
+                },
+                Err(e) => {
+                    init_err = Some(format!("Read error '{}': {e} (showing demo)", p.display()));
+                    PlasmidRecord::demo_pcrv_gfp()
+                }
+            }
+        } else {
+            PlasmidRecord::demo_pcrv_gfp()
+        };
 
         let mut selected_enzymes = vec![false; ENZYME_CATALOG.len()];
         for (i, e) in ENZYME_CATALOG.iter().enumerate() {
@@ -91,6 +111,12 @@ impl PlasmidStudioApp {
         }
 
         let default_primer = record.sequence[..22.min(record.sequence.len())].to_string();
+        let status_is_error = init_err.is_some();
+        let status_bar = init_err.unwrap_or_else(|| {
+            String::from(
+                "Loaded construct. Drag on the ring to select any bp span, or click a feature arc/label to inspect.",
+            )
+        });
         let mut app = Self {
             record,
             load_path_input: initial_file
@@ -101,6 +127,8 @@ impl PlasmidStudioApp {
             stock_oligos: vec![(String::from("J23100_Fwd"), default_primer)],
             bound_primers: Vec::new(),
             selected_span: (0, 21),
+            drag_anchor_bp: None,
+            selected_feature_idx: None,
             active_tab: InspectorTab::MapAndPrimers,
             selected_enzymes,
             agarose_pct: 1.0,
@@ -111,12 +139,32 @@ impl PlasmidStudioApp {
             ),
             trace_path_input: String::new(),
             last_trace_result: None,
-            status_bar: String::from(
-                "Loaded construct. Click anywhere on the circular ring to inspect nucleotides and live SantaLucia/Owczarzy primer Tm.",
-            ),
+            status_bar,
+            status_is_error,
+            about_open: false,
         };
         app.rebind_primers();
         app
+    }
+
+    fn load_plasmid_path(&mut self, path: &std::path::Path) {
+        if let Some(bytes) = read_bytes_reported(path, &mut self.status_bar, &mut self.status_is_error) {
+            match load_plasmid_bytes(&path.to_string_lossy(), &bytes) {
+                Ok(rec) => {
+                    self.selected_span = (0, 21.min(rec.sequence.len().saturating_sub(1)));
+                    self.selected_feature_idx = None;
+                    self.drag_anchor_bp = None;
+                    self.record = rec;
+                    self.rebind_primers();
+                    self.status_is_error = false;
+                    self.status_bar = format!("Loaded '{}' ({} bp).", self.record.name, self.record.sequence.len());
+                }
+                Err(e) => {
+                    self.status_is_error = true;
+                    self.status_bar = format!("Plasmid parse error: {e}");
+                }
+            }
+        }
     }
 
     fn rebind_primers(&mut self) {
@@ -147,6 +195,7 @@ pub fn run_plasmid_gui(initial_file: Option<PathBuf>) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1240.0, 800.0])
+            .with_icon(crate::brand::osabt_icon_data())
             .with_title("OSABT Plasmid Studio • CRV Science Network (GPL-3.0)"),
         ..Default::default()
     };
@@ -160,6 +209,7 @@ pub fn run_plasmid_gui(initial_file: Option<PathBuf>) -> Result<(), String> {
 
 impl eframe::App for PlasmidStudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::brand::draw_standalone_footer(ctx, &mut self.about_open);
         self.draw_panels(ctx);
     }
 }
@@ -168,9 +218,9 @@ impl PlasmidStudioApp {
     /// Renders all Plasmid Studio panels onto `ctx`.
     pub fn draw_panels(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("plasmid_top_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.heading(format!(
-                    "🧬 {} ({} bp, {})",
+                    "{} ({} bp, {})",
                     self.record.name,
                     self.record.sequence.len(),
                     if self.record.circular {
@@ -181,42 +231,53 @@ impl PlasmidStudioApp {
                 ));
                 ui.separator();
                 ui.label("File (.gbk / .dna / .fa):");
-                ui.add(egui::TextEdit::singleline(&mut self.load_path_input).desired_width(220.0));
-                if ui.button("Load").clicked() {
-                    match fs::read(&self.load_path_input).and_then(|bytes| {
-                        load_plasmid_bytes(&self.load_path_input, &bytes)
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
-                    }) {
-                        Ok(rec) => {
-                            self.selected_span = (0, 21.min(rec.sequence.len().saturating_sub(1)));
-                            self.record = rec;
-                            self.rebind_primers();
-                            self.status_bar =
-                                format!("Loaded '{}' successfully.", self.load_path_input);
-                        }
-                        Err(e) => {
-                            self.status_bar = format!("Load error: {e}");
-                        }
+                ui.add(egui::TextEdit::singleline(&mut self.load_path_input).desired_width(180.0));
+                if ui.button("Browse...").clicked() {
+                    if let Some(p) = pick_open_file(
+                        "Open Plasmid File",
+                        "Plasmid / Sequence",
+                        &["gbk", "gb", "dna", "fa", "fasta", "fna"],
+                    ) {
+                        self.load_path_input = p.to_string_lossy().to_string();
+                        self.load_plasmid_path(&p);
                     }
+                }
+                if ui.button("Load").clicked() && !self.load_path_input.trim().is_empty() {
+                    let p = PathBuf::from(self.load_path_input.trim());
+                    self.load_plasmid_path(&p);
                 }
                 if ui.button("Demo GFP Vector").clicked() {
                     self.record = PlasmidRecord::demo_pcrv_gfp();
+                    self.selected_span = (0, 21);
+                    self.selected_feature_idx = None;
+                    self.drag_anchor_bp = None;
                     self.rebind_primers();
+                    self.status_is_error = false;
                     self.status_bar = String::from("Reset to built-in pCRV_DemoGFP vector.");
                 }
                 if ui.button("Export .gbk").clicked() {
-                    let out_name = format!("{}.gbk", self.record.name);
-                    match fs::write(&out_name, write_genbank(&self.record)) {
-                        Ok(_) => self.status_bar = format!("Exported GenBank -> ./{out_name}"),
-                        Err(e) => self.status_bar = format!("Export error: {e}"),
+                    let default_name = format!("{}.gbk", self.record.name);
+                    if let Some(path) = pick_save_file("Export GenBank File", &default_name, "GenBank", &["gbk", "gb"]) {
+                        write_text_reported(
+                            &path,
+                            &write_genbank(&self.record),
+                            &mut self.status_bar,
+                            &mut self.status_is_error,
+                            "Exported GenBank",
+                        );
                     }
                 }
                 if ui.button("Export Map .svg").clicked() {
-                    let out_name = format!("{}_map.svg", self.record.name);
-                    let svg = render_plasmid_map_svg(&self.record, &self.bound_primers, true);
-                    match fs::write(&out_name, svg) {
-                        Ok(_) => self.status_bar = format!("Exported Vector Map SVG -> ./{out_name}"),
-                        Err(e) => self.status_bar = format!("SVG export error: {e}"),
+                    let default_name = format!("{}_map.svg", self.record.name);
+                    if let Some(path) = pick_save_file("Export Plasmid Map SVG", &default_name, "SVG Image", &["svg"]) {
+                        let svg = render_plasmid_map_svg(&self.record, &self.bound_primers, true);
+                        write_text_reported(
+                            &path,
+                            &svg,
+                            &mut self.status_bar,
+                            &mut self.status_is_error,
+                            "Exported Vector Map SVG",
+                        );
                     }
                 }
             });
@@ -227,7 +288,7 @@ impl PlasmidStudioApp {
             .show(ctx, |ui| {
                 self.draw_linear_sequence_hud(ui);
                 ui.separator();
-                ui.label(&self.status_bar);
+                draw_status_banner(ui, &self.status_bar, self.status_is_error);
             });
 
         egui::SidePanel::right("plasmid_right_inspector")
@@ -278,20 +339,180 @@ impl PlasmidStudioApp {
         let (response, painter) = ui.allocate_painter(avail, Sense::click_and_drag());
         let rect = response.rect;
         let center = rect.center();
-        let radius = (rect.width().min(rect.height()) * 0.34).max(80.0);
+        let radius = (rect.width() * 0.21).min(rect.height() * 0.29).max(76.0);
         let n = self.record.sequence.len().max(1);
+        let r_feat_band = radius + 16.0;
+        let r_feat_outer = radius + 24.0;
 
-        // Interactive click/drag selection around circular ring
-        if let Some(pos) = response.interact_pointer_pos() {
+        // Precompute unified hemisphere sweep-line callouts for features + unique cutters
+        let mut callout_inputs: Vec<CircularCalloutInput> = Vec::new();
+        for (idx, feat) in self.record.features.iter().enumerate() {
+            let start_a = (feat.start_0 as f64 / n as f64) * 2.0 * std::f64::consts::PI;
+            let sweep_a = (feat.span_bp(n) as f64 / n as f64) * 2.0 * std::f64::consts::PI;
+            callout_inputs.push(CircularCalloutInput {
+                label: feat.name.clone(),
+                angle_rad: start_a + sweep_a * 0.5,
+                anchor_radius: (r_feat_band + 4.0) as f64,
+                is_feature: true,
+                color_hex: feat.color_hex.clone(),
+                source_index: idx,
+            });
+        }
+        let uniques = find_unique_cutters(&self.record);
+        for (u_idx, site) in uniques.iter().take(14).enumerate() {
+            let ang = (site.cut_top_0 as f64 / n as f64) * 2.0 * std::f64::consts::PI;
+            callout_inputs.push(CircularCalloutInput {
+                label: format!("{} ({})", site.enzyme_name, site.cut_top_0 + 1),
+                angle_rad: ang,
+                anchor_radius: radius as f64,
+                is_feature: false,
+                color_hex: String::from("#38bdf8"),
+                source_index: u_idx,
+            });
+        }
+
+        let placed_callouts = layout_circular_callouts(
+            center.x as f64,
+            center.y as f64,
+            r_feat_outer as f64,
+            (
+                (rect.left() + 115.0).min(center.x - 40.0) as f64,
+                (rect.top() + 14.0) as f64,
+                (rect.right() - 115.0).max(center.x + 40.0) as f64,
+                (rect.bottom() - 14.0) as f64,
+            ),
+            15.5,
+            callout_inputs,
+        );
+
+        // Pointer drag selection + single-click feature arc/label hit-testing
+        let pos_to_bp = |pos: Pos2| -> usize {
             let delta = pos - center;
-            if delta.length() > radius * 0.45 && delta.length() < radius * 1.45 {
-                let mut angle = delta.y.atan2(delta.x) + PI * 0.5;
-                if angle < 0.0 {
-                    angle += 2.0 * PI;
+            let mut angle = delta.y.atan2(delta.x) + PI * 0.5;
+            if angle < 0.0 {
+                angle += 2.0 * PI;
+            }
+            (((angle / (2.0 * PI)) * (n as f32)) as usize).min(n - 1)
+        };
+
+        if response.drag_started() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let d = (pos - center).length();
+                if d > radius * 0.45 && d < radius * 1.75 {
+                    let bp = pos_to_bp(pos);
+                    self.drag_anchor_bp = Some(bp);
+                    self.selected_feature_idx = None;
+                    self.selected_span = (bp, bp);
                 }
-                let clicked_bp = (((angle / (2.0 * PI)) * (n as f32)) as usize).min(n - 1);
-                let win_end = (clicked_bp + 21).min(n - 1);
-                self.selected_span = (clicked_bp, win_end);
+            }
+        }
+        if response.dragged() {
+            if let (Some(anchor), Some(pos)) = (self.drag_anchor_bp, response.interact_pointer_pos()) {
+                let cur = pos_to_bp(pos);
+                let (s0, e0) = if self.record.circular {
+                    let fwd_len = if cur >= anchor { cur - anchor } else { n - anchor + cur };
+                    let rev_len = n - fwd_len;
+                    if fwd_len <= rev_len {
+                        (anchor, cur)
+                    } else {
+                        (cur, anchor)
+                    }
+                } else {
+                    (anchor.min(cur), anchor.max(cur))
+                };
+                self.selected_span = (s0, e0);
+            }
+        }
+        if response.drag_stopped() {
+            if let Some(anchor) = self.drag_anchor_bp.take() {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let cur = pos_to_bp(pos);
+                    if cur != anchor {
+                        let (s0, e0) = self.selected_span;
+                        let span_len = if e0 >= s0 { e0 - s0 + 1 } else { (n - s0) + e0 + 1 };
+                        self.status_is_error = false;
+                        self.status_bar = format!("Selected {} bp ({}..={}).", span_len, s0 + 1, e0 + 1);
+                    }
+                }
+            }
+        } else if response.clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let mut hit_feat: Option<usize> = None;
+                for c in &placed_callouts {
+                    if !c.input.is_feature {
+                        continue;
+                    }
+                    let lx = c.p2.0 as f32;
+                    let ly = c.p2.1 as f32;
+                    let text_size = ui.fonts(|f| {
+                        f.layout_no_wrap(
+                            c.input.label.clone(),
+                            egui::FontId::proportional(11.5),
+                            Color32::WHITE,
+                        )
+                        .size()
+                    });
+                    let hit_w = text_size.x.max(48.0);
+                    let half_h = (text_size.y * 0.5 + 2.0).max(8.5);
+                    let lbl_rect = if c.is_right_hemisphere {
+                        Rect::from_min_max(
+                            Pos2::new(lx + 2.0, ly - half_h),
+                            Pos2::new(lx + 6.0 + hit_w, ly + half_h),
+                        )
+                    } else {
+                        Rect::from_min_max(
+                            Pos2::new(lx - 6.0 - hit_w, ly - half_h),
+                            Pos2::new(lx - 2.0, ly + half_h),
+                        )
+                    };
+                    if lbl_rect.contains(pos) {
+                        hit_feat = Some(c.input.source_index);
+                        break;
+                    }
+                }
+                if hit_feat.is_none() {
+                    let delta = pos - center;
+                    let d = delta.length();
+                    if (d - r_feat_band).abs() <= 9.0 {
+                        let bp = pos_to_bp(pos);
+                        for (idx, feat) in self.record.features.iter().enumerate() {
+                            let inside = if feat.start_0 <= feat.end_0 {
+                                bp >= feat.start_0 && bp <= feat.end_0
+                            } else {
+                                bp >= feat.start_0 || bp <= feat.end_0
+                            };
+                            if inside {
+                                hit_feat = Some(idx);
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Some(fidx) = hit_feat {
+                    if let Some(feat) = self.record.features.get(fidx) {
+                        self.selected_feature_idx = Some(fidx);
+                        self.selected_span = (feat.start_0.min(n - 1), feat.end_0.min(n - 1));
+                        self.status_is_error = false;
+                        self.status_bar = format!(
+                            "Feature '{}' [{}] {}..={} ({} bp, {:?})",
+                            feat.name,
+                            feat.feature_type,
+                            feat.start_0 + 1,
+                            feat.end_0 + 1,
+                            feat.span_bp(n),
+                            feat.strand
+                        );
+                    }
+                } else {
+                    let delta = pos - center;
+                    if delta.length() > radius * 0.45 && delta.length() < radius * 1.45 {
+                        let bp = pos_to_bp(pos);
+                        self.selected_feature_idx = None;
+                        self.selected_span = (bp, bp);
+                        self.status_is_error = false;
+                        self.status_bar = format!("Cursor at bp {} (drag ring to select span).", bp + 1);
+                    }
+                }
             }
         }
 
@@ -303,58 +524,72 @@ impl PlasmidStudioApp {
             Stroke::new(1.2_f32, Color32::from_rgb(100, 116, 139)),
         );
 
-        // Highlight currently selected window arc
+        // Highlight currently selected window arc (supporting origin-wrapping circular spans)
         let (s0, e0) = self.selected_span;
-        if e0 >= s0 {
-            let pts = arc_polyline(
-                center,
-                radius - 12.0,
-                (s0 as f32 / n as f32) * 2.0 * PI,
-                ((e0 - s0 + 1).max(2) as f32 / n as f32) * 2.0 * PI,
-                24,
-            );
-            painter.add(Shape::line(
-                pts,
-                Stroke::new(6.0_f32, Color32::from_rgb(250, 204, 21)),
-            ));
-        }
+        let sel_bp = if e0 >= s0 { e0 - s0 + 1 } else { (n - s0) + e0 + 1 };
+        let pts = arc_polyline(
+            center,
+            radius - 12.0,
+            (s0 as f32 / n as f32) * 2.0 * PI,
+            (sel_bp.max(2) as f32 / n as f32) * 2.0 * PI,
+            32,
+        );
+        painter.add(Shape::line(
+            pts,
+            Stroke::new(6.0_f32, Color32::from_rgb(250, 204, 21)),
+        ));
 
-        // Annotated features
+        // Annotated feature arcs
         for (idx, feat) in self.record.features.iter().enumerate() {
             let start_a = (feat.start_0 as f32 / n as f32) * 2.0 * PI;
             let sweep_a = (feat.span_bp(n) as f32 / n as f32) * 2.0 * PI;
             let color = parse_hex_color(&feat.color_hex);
-            let r_feat = radius + 14.0 + ((idx % 2) as f32) * 10.0;
-            let pts = arc_polyline(center, r_feat, start_a, sweep_a.max(0.05), 36);
+            let pts = arc_polyline(center, r_feat_band, start_a, sweep_a.max(0.05), 36);
+            if self.selected_feature_idx == Some(idx) {
+                painter.add(Shape::line(pts.clone(), Stroke::new(12.0_f32, Color32::from_rgb(250, 204, 21))));
+            }
             painter.add(Shape::line(pts, Stroke::new(8.0_f32, color)));
-
-            let mid_a = start_a + sweep_a * 0.5 - PI * 0.5;
-            let lbl_pos = center + Vec2::new(mid_a.cos(), mid_a.sin()) * (r_feat + 18.0);
-            painter.text(
-                lbl_pos,
-                egui::Align2::CENTER_CENTER,
-                &feat.name,
-                egui::FontId::proportional(12.0),
-                color,
-            );
         }
 
-        // Unique restriction cutters
-        for (u_idx, site) in find_unique_cutters(&self.record).iter().take(14).enumerate() {
-            let ang = (site.cut_top_0 as f32 / n as f32) * 2.0 * PI - PI * 0.5;
-            let dir = Vec2::new(ang.cos(), ang.sin());
-            let r_out = radius + 42.0 + ((u_idx % 2) as f32) * 14.0;
-            painter.line_segment(
-                [center + dir * radius, center + dir * r_out],
-                Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)),
-            );
-            painter.text(
-                center + dir * (r_out + 10.0),
-                egui::Align2::CENTER_CENTER,
-                format!("{} ({})", site.enzyme_name, site.cut_top_0 + 1),
-                egui::FontId::monospace(10.5),
-                Color32::from_rgb(125, 211, 252),
-            );
+        // Draw unified relaxed callouts + 3-point elbow leaders
+        for c in &placed_callouts {
+            let p0 = Pos2::new(c.p0.0 as f32, c.p0.1 as f32);
+            let p1 = Pos2::new(c.p1.0 as f32, c.p1.1 as f32);
+            let p2 = Pos2::new(c.p2.0 as f32, c.p2.1 as f32);
+            let align = if c.is_right_hemisphere {
+                egui::Align2::LEFT_CENTER
+            } else {
+                egui::Align2::RIGHT_CENTER
+            };
+            let text_dx = if c.is_right_hemisphere { 4.0 } else { -4.0 };
+            if c.input.is_feature {
+                let col = parse_hex_color(&c.input.color_hex);
+                let is_sel = self.selected_feature_idx == Some(c.input.source_index);
+                painter.add(Shape::line(
+                    vec![p0, p1, p2],
+                    Stroke::new(if is_sel { 1.8 } else { 1.1_f32 }, col),
+                ));
+                painter.text(
+                    Pos2::new(p2.x + text_dx, p2.y),
+                    align,
+                    &c.input.label,
+                    egui::FontId::proportional(11.5),
+                    if is_sel { Color32::from_rgb(250, 204, 21) } else { col },
+                );
+            } else {
+                let enz_col = Color32::from_rgb(125, 211, 252);
+                painter.add(Shape::line(
+                    vec![p0, p1, p2],
+                    Stroke::new(1.0_f32, Color32::from_rgb(56, 189, 248)),
+                ));
+                painter.text(
+                    Pos2::new(p2.x + text_dx, p2.y),
+                    align,
+                    &c.input.label,
+                    egui::FontId::monospace(10.5),
+                    enz_col,
+                );
+            }
         }
 
         // Bound primers
@@ -373,14 +608,14 @@ impl PlasmidStudioApp {
             center - Vec2::new(0.0, 10.0),
             egui::Align2::CENTER_CENTER,
             &self.record.name,
-            egui::FontId::proportional(17.0),
+            egui::FontId::proportional(16.0),
             Color32::WHITE,
         );
         painter.text(
             center + Vec2::new(0.0, 12.0),
             egui::Align2::CENTER_CENTER,
             format!("{} bp", self.record.sequence.len()),
-            egui::FontId::monospace(12.5),
+            egui::FontId::monospace(12.0),
             Color32::LIGHT_GRAY,
         );
     }
@@ -391,36 +626,42 @@ impl PlasmidStudioApp {
             return;
         }
         let s0 = self.selected_span.0.min(n - 1);
-        let e0 = self.selected_span.1.min(n - 1).max(s0);
-        let sub = &self.record.sequence[s0..=e0];
-        let aa = translate_dna(sub);
+        let e0 = self.selected_span.1.min(n - 1);
+        let wrapped_sub: String = if e0 >= s0 {
+            self.record.sequence[s0..=e0].to_string()
+        } else {
+            format!("{}{}", &self.record.sequence[s0..], &self.record.sequence[..=e0])
+        };
+        let span_len = wrapped_sub.len();
+        let sub_slice = &wrapped_sub[..wrapped_sub.len().min(500)];
+        let aa = translate_dna(sub_slice);
         let cond = ReactionConditions::for_preset(PolymerasePreset::Q5);
-        let tm_txt = calc_perfect_duplex(sub, &cond, 60.0)
+        let tm_txt = calc_perfect_duplex(sub_slice, &cond, 60.0)
             .map(|r| format!("Q5 Tm: {:.2} C | GC: {:.1}% | dG37: {:.2} kcal/mol", r.tm_salt_corrected_c, r.gc_pct, r.delta_g_37_kcal))
             .unwrap_or_else(|_| String::from("Select >= 2 bp for Tm"));
-        let g4 = g4_hunter_max_window(sub, 20);
+        let g4 = g4_hunter_max_window(sub_slice, 20);
 
         ui.horizontal(|ui| {
             ui.strong(format!(
                 "Selection: {}..={} ({} bp)",
                 s0 + 1,
                 e0 + 1,
-                e0 - s0 + 1
+                span_len
             ));
             ui.separator();
             ui.label(tm_txt);
             ui.separator();
             ui.label(format!("G4Hunter: {g4:.2}"));
             if ui.button("Use Selection as Primer").clicked() {
-                self.primer_seq_input = sub.to_string();
+                self.primer_seq_input = wrapped_sub.clone();
                 self.primer_name_input = format!("Prm_{}_{}", s0 + 1, e0 + 1);
             }
         });
 
-        let preview_end = (s0 + 78).min(n);
-        let top_dna = &self.record.sequence[s0..preview_end];
-        ui.monospace(format!("5' {:>5} {} 3'", s0 + 1, top_dna));
-        ui.monospace(format!("   Frame+1 AA: {aa}"));
+        let preview: String = wrapped_sub.chars().take(78).collect();
+        let aa_preview: String = aa.chars().take(60).collect();
+        ui.monospace(format!("5' {:>5} {} 3'", s0 + 1, preview));
+        ui.monospace(format!("   Frame+1 AA: {aa_preview}"));
     }
 
     fn draw_map_and_primers_tab(&mut self, ui: &mut egui::Ui) {
@@ -516,9 +757,15 @@ impl PlasmidStudioApp {
                     true,
                     true,
                 );
-                let out_name = format!("{}_gel.svg", self.record.name);
-                if fs::write(&out_name, svg).is_ok() {
-                    self.status_bar = format!("Saved Virtual Gel SVG -> ./{out_name}");
+                let default_name = format!("{}_gel.svg", self.record.name);
+                if let Some(path) = pick_save_file("Export Virtual Gel SVG", &default_name, "SVG Image", &["svg"]) {
+                    write_text_reported(
+                        &path,
+                        &svg,
+                        &mut self.status_bar,
+                        &mut self.status_is_error,
+                        "Saved Virtual Gel SVG",
+                    );
                 }
             }
         });
@@ -598,8 +845,15 @@ impl PlasmidStudioApp {
                 ui.monospace(format!("  R: {}", j.upstream_rev_primer.annotated_sequence));
             }
             if ui.button("Export Gibson Primers .tsv").clicked() {
-                let _ = fs::write("osabt_gibson_primers.tsv", gplan.to_order_tsv());
-                self.status_bar = String::from("Saved ./osabt_gibson_primers.tsv");
+                if let Some(path) = pick_save_file("Export Gibson Primers TSV", "osabt_gibson_primers.tsv", "TSV", &["tsv"]) {
+                    write_text_reported(
+                        &path,
+                        &gplan.to_order_tsv(),
+                        &mut self.status_bar,
+                        &mut self.status_is_error,
+                        "Saved Gibson Primers TSV",
+                    );
+                }
             }
         }
 
@@ -646,32 +900,51 @@ impl PlasmidStudioApp {
         ui.heading("Sanger (.ab1) & Whole-Plasmid FASTA Aligner");
         ui.horizontal(|ui| {
             ui.label("Trace File:");
-            ui.add(egui::TextEdit::singleline(&mut self.trace_path_input).desired_width(220.0));
-            if ui.button("Align Read").clicked() {
-                match fs::read(&self.trace_path_input) {
-                    Ok(bytes) => {
-                        let trace_opt = if bytes.starts_with(b"ABIF") {
-                            parse_ab1_trace(&bytes).ok()
-                        } else {
-                            std::str::from_utf8(&bytes)
-                                .ok()
-                                .and_then(|t| parse_fasta_or_raw(t).ok())
-                                .and_then(|mut r| r.pop())
-                                .map(|(sample_name, sequence)| {
-                                    let qualities = vec![40u8; sequence.len()];
-                                    SangerTrace {
-                                        sample_name,
-                                        sequence,
-                                        qualities,
-                                    }
-                                })
-                        };
-                        if let Some(tr) = trace_opt {
+            ui.add(egui::TextEdit::singleline(&mut self.trace_path_input).desired_width(180.0));
+            if ui.button("Browse...").clicked() {
+                if let Some(p) = pick_open_file("Open Sanger Trace or FASTA", "Trace / FASTA", &["ab1", "fa", "fasta", "txt"]) {
+                    self.trace_path_input = p.to_string_lossy().to_string();
+                }
+            }
+            if ui.button("Align Read").clicked() && !self.trace_path_input.trim().is_empty() {
+                let p = PathBuf::from(self.trace_path_input.trim());
+                if let Some(bytes) = read_bytes_reported(&p, &mut self.status_bar, &mut self.status_is_error) {
+                    let trace_res: Result<SangerTrace, String> = if bytes.starts_with(b"ABIF") {
+                        parse_ab1_trace(&bytes).map_err(|e| format!("AB1 parse error: {e}"))
+                    } else {
+                        std::str::from_utf8(&bytes)
+                            .map_err(|e| format!("Trace file is not valid ABIF or UTF-8 FASTA: {e}"))
+                            .and_then(|t| parse_fasta_or_raw(t).map_err(|e| format!("FASTA parse error: {e}")))
+                            .and_then(|mut r| {
+                                r.pop()
+                                    .ok_or_else(|| String::from("No sequence found in trace file."))
+                            })
+                            .map(|(sample_name, sequence)| {
+                                let qualities = vec![40u8; sequence.len()];
+                                SangerTrace {
+                                    sample_name,
+                                    sequence,
+                                    qualities,
+                                }
+                            })
+                    };
+                    match trace_res {
+                        Ok(tr) => {
+                            let name = tr.sample_name.clone();
                             self.last_trace_result = align_trace_to_plasmid(&self.record, &tr, 20);
-                            self.status_bar = format!("Aligned trace '{}'.", tr.sample_name);
+                            if self.last_trace_result.is_some() {
+                                self.status_is_error = false;
+                                self.status_bar = format!("Aligned trace '{name}'.");
+                            } else {
+                                self.status_is_error = true;
+                                self.status_bar = format!("Trace '{name}' could not align (>= 20 bp anchor) to plasmid.");
+                            }
+                        }
+                        Err(e) => {
+                            self.status_is_error = true;
+                            self.status_bar = e;
                         }
                     }
-                    Err(e) => self.status_bar = format!("Failed reading trace: {e}"),
                 }
             }
         });
@@ -689,7 +962,7 @@ impl PlasmidStudioApp {
             if aln.variants.is_empty() {
                 ui.colored_label(
                     Color32::GREEN,
-                    "✓ 100% sequence concordance across aligned span (zero substitutions).",
+                    "[OK] 100% sequence concordance across aligned span (zero substitutions).",
                 );
             } else {
                 for v in &aln.variants {
@@ -736,4 +1009,124 @@ fn parse_hex_color(hex: &str) -> Color32 {
         }
     }
     Color32::from_rgb(34, 197, 94)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gibson::Strand;
+    use crate::plasmid_io::PlasmidFeature;
+
+    #[test]
+    fn cycles_all_inspector_tabs_and_clicks_long_feature_label_beyond_180px() {
+        let ctx = egui::Context::default();
+        let mut app = PlasmidStudioApp::new(None);
+        for tab in [
+            InspectorTab::MapAndPrimers,
+            InspectorTab::DigestAndGel,
+            InspectorTab::CloningWizard,
+            InspectorTab::TraceVerify,
+        ] {
+            app.active_tab = tab;
+            for frame in 0..2 {
+                let mut raw = egui::RawInput::default();
+                raw.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0)));
+                raw.time = Some(frame as f64 / 60.0);
+                let out = ctx.run(raw, |c| app.draw_panels(c));
+                assert!(!out.shapes.is_empty());
+            }
+        }
+
+        // Synthesize a plasmid with a 37-char feature at 3 o'clock (right hemisphere)
+        let seq = "ATGACCATGATTACGCCAAGCTATTTAGGTGACACTATAGAATACTCAAGCTATGCATCCAACGCGTTGGGAGCTCTCCC".repeat(12);
+        let n = seq.len();
+        let feat = PlasmidFeature {
+            name: String::from("CMV_Immediate_Early_Enhancer_Promoter"),
+            feature_type: String::from("promoter"),
+            start_0: n / 4 - 20,
+            end_0: n / 4 + 20,
+            strand: Strand::Forward,
+            color_hex: String::from("#22c55e"),
+            qualifiers: Vec::new(),
+        };
+        let mut click_app = PlasmidStudioApp::new(None);
+        click_app.record = PlasmidRecord {
+            name: String::from("LongLabelTest"),
+            definition: String::from("Long label click test"),
+            accession: String::from("TEST1"),
+            circular: true,
+            sequence: seq,
+            features: vec![feat],
+        };
+        click_app.selected_feature_idx = None;
+
+        // Frame 0: measure canvas rect and confirm exact galley placement
+        let mut canvas_rect = Rect::NOTHING;
+        let mut raw0 = egui::RawInput::default();
+        raw0.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 860.0)));
+        ctx.set_pixels_per_point(1.0);
+        let _ = ctx.run(raw0, |c| {
+            egui::CentralPanel::default().show(c, |ui| {
+                canvas_rect = ui.available_rect_before_wrap();
+                click_app.draw_circular_plasmid_canvas(ui);
+            });
+        });
+
+        let center = canvas_rect.center();
+        let radius = (canvas_rect.width() * 0.21)
+            .min(canvas_rect.height() * 0.29)
+            .max(76.0);
+        let r_feat_outer = radius + 24.0;
+        let placed = layout_circular_callouts(
+            center.x as f64,
+            center.y as f64,
+            r_feat_outer as f64,
+            (
+                (canvas_rect.left() + 115.0).min(center.x - 40.0) as f64,
+                (canvas_rect.top() + 14.0) as f64,
+                (canvas_rect.right() - 115.0).max(center.x + 40.0) as f64,
+                (canvas_rect.bottom() - 14.0) as f64,
+            ),
+            15.5,
+            vec![CircularCalloutInput {
+                label: String::from("CMV_Immediate_Early_Enhancer_Promoter"),
+                angle_rad: std::f64::consts::FRAC_PI_2,
+                anchor_radius: (radius + 20.0) as f64,
+                is_feature: true,
+                color_hex: String::from("#22c55e"),
+                source_index: 0,
+            }],
+        );
+        let p2 = Pos2::new(placed[0].p2.0 as f32, placed[0].p2.1 as f32);
+        let measured_w = ctx.fonts(|f| {
+            f.layout_no_wrap(
+                String::from("CMV_Immediate_Early_Enhancer_Promoter"),
+                egui::FontId::proportional(11.5),
+                Color32::WHITE,
+            )
+            .size()
+            .x
+        });
+        assert!(measured_w > 200.0, "expected measured_w > 200 px, got {measured_w}");
+        let click_pos = Pos2::new(p2.x + 195.0, p2.y);
+
+        for (step, pressed) in [(1usize, true), (2usize, false)] {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 860.0)));
+            raw.time = Some(step as f64 / 60.0);
+            raw.events.push(egui::Event::PointerMoved(click_pos));
+            raw.events.push(egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            let _ = ctx.run(raw, |c| {
+                egui::CentralPanel::default().show(c, |ui| {
+                    click_app.draw_circular_plasmid_canvas(ui);
+                });
+            });
+        }
+        assert_eq!(click_app.selected_feature_idx, Some(0));
+    }
 }

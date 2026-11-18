@@ -594,6 +594,156 @@ fn mean_and_sd(v: &[f64]) -> (f64, f64) {
 }
 
 
+/// Parses either a full OSABT plate layout CSV (`well_id,row,col,role,compound,concentration_nM,replicate,volume_uL,raw_signal,normalized_pct`)
+/// or a 3-column dose-response CSV (`compound,conc_nM,response`) into a normalized [`Microplate`].
+pub fn parse_plate_or_dose_csv(raw: &str) -> Result<Microplate, String> {
+    use crate::plate_layout::{PlateFormat, PlateWell};
+
+    let mut parsed_full: Vec<PlateWell> = Vec::new();
+    let mut max_row = 0usize;
+    let mut max_col = 0usize;
+    let mut parsed_3col: Vec<(String, f64, f64)> = Vec::new();
+
+    for line in raw.trim_start_matches('\u{feff}').lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = t.split([',', '\t', ';']).map(str::trim).collect();
+        if cols.len() >= 9 && cols[0].len() >= 2 && cols[1].len() == 1 {
+            let row_ch = cols[1].as_bytes()[0].to_ascii_uppercase();
+            if row_ch.is_ascii_uppercase() {
+                if let Ok(col1) = cols[2].parse::<usize>() {
+                    if col1 >= 1 {
+                        let r = (row_ch - b'A') as usize;
+                        let c = col1 - 1;
+                        max_row = max_row.max(r);
+                        max_col = max_col.max(c);
+                        let role_l = cols[3].to_ascii_lowercase();
+                        let role = if role_l.contains("moat") || role_l.contains("buffer") {
+                            WellRole::BufferMoat
+                        } else if role_l.contains("negative") || role_l.contains("vehicle") {
+                            WellRole::NegativeControl
+                        } else if role_l.contains("positive") {
+                            WellRole::PositiveControl
+                        } else if role_l.contains("compound") || role_l.contains("dose") {
+                            WellRole::CompoundDose
+                        } else {
+                            WellRole::Empty
+                        };
+                        let conc = cols[5].parse::<f64>().ok().filter(|v| v.is_finite());
+                        let rep = cols[6].parse::<usize>().unwrap_or(1);
+                        let raw_sig = cols[8].parse::<f64>().ok().filter(|v| v.is_finite());
+                        let norm_sig = cols
+                            .get(9)
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .filter(|v| v.is_finite());
+                        parsed_full.push(PlateWell {
+                            row_idx: r,
+                            col_idx: c,
+                            well_id: cols[0].to_string(),
+                            role,
+                            compound_name: cols[4].to_string(),
+                            concentration_nm: conc,
+                            replicate_num: rep,
+                            raw_readout: raw_sig,
+                            normalized_pct: norm_sig,
+                        });
+                        continue;
+                    }
+                }
+            }
+        }
+        if cols.len() >= 3 {
+            if let (Ok(conc), Ok(resp)) = (cols[1].parse::<f64>(), cols[2].parse::<f64>()) {
+                if conc > 0.0 && conc.is_finite() && resp.is_finite() {
+                    parsed_3col.push((cols[0].to_string(), conc, resp));
+                }
+            }
+        }
+    }
+
+    if !parsed_full.is_empty() {
+        let format = if max_row >= 8 || max_col >= 12 {
+            PlateFormat::Well384
+        } else {
+            PlateFormat::Well96
+        };
+        let mut plate = Microplate {
+            name: String::from("Imported_Plate"),
+            format,
+            assay_volume_ul: if format == PlateFormat::Well384 { 40.0 } else { 100.0 },
+            wells: parsed_full,
+        };
+        let _ = evaluate_plate_qc_and_normalize(&mut plate);
+        return Ok(plate);
+    }
+
+    if parsed_3col.len() < 5 {
+        return Err(String::from(
+            "Expected >= 5 valid `compound,conc_nM,response` rows or an OSABT plate layout CSV.",
+        ));
+    }
+
+    let format = if parsed_3col.len() > 80 {
+        PlateFormat::Well384
+    } else {
+        PlateFormat::Well96
+    };
+    let (nrows, ncols) = format.dims();
+    let mut wells = Vec::with_capacity(nrows * ncols);
+    for r in 0..nrows {
+        for c in 0..ncols {
+            wells.push(PlateWell {
+                row_idx: r,
+                col_idx: c,
+                well_id: Microplate::format_well_id(r, c),
+                role: WellRole::Empty,
+                compound_name: String::new(),
+                concentration_nm: None,
+                replicate_num: 0,
+                raw_readout: None,
+                normalized_pct: None,
+            });
+        }
+    }
+    // Seed synthetic vehicle (100%) and positive (0%) controls so QC computes cleanly
+    for (idx, val) in [(0usize, 100.0), (1, 100.0), (2, 100.0), (3, 0.0), (4, 0.0), (5, 0.0)] {
+        if let Some(w) = wells.get_mut(idx) {
+            w.role = if val > 50.0 {
+                WellRole::NegativeControl
+            } else {
+                WellRole::PositiveControl
+            };
+            w.compound_name = if val > 50.0 {
+                String::from("Vehicle_100")
+            } else {
+                String::from("PosCtrl_0")
+            };
+            w.raw_readout = Some(val);
+            w.normalized_pct = Some(val);
+        }
+    }
+    for (i, (comp, conc, resp)) in parsed_3col.into_iter().enumerate() {
+        if let Some(w) = wells.get_mut(6 + i) {
+            w.role = WellRole::CompoundDose;
+            w.compound_name = comp;
+            w.concentration_nm = Some(conc);
+            w.replicate_num = 1;
+            w.raw_readout = Some(resp);
+            w.normalized_pct = Some(resp);
+        }
+    }
+    let mut plate = Microplate {
+        name: String::from("Imported_DoseResponse"),
+        format,
+        assay_volume_ul: 100.0,
+        wells,
+    };
+    let _ = evaluate_plate_qc_and_normalize(&mut plate);
+    Ok(plate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,5 +772,20 @@ mod tests {
         let fit = fit_four_param_logistic("Agonist-X", &pts).unwrap();
         assert!((fit.relative_ec50_nm - 20.0).abs() < 0.2);
         assert!(fit.ec90_nm > fit.relative_ec50_nm * 6.0);
+    }
+
+    #[test]
+    fn parses_both_full_plate_and_3col_dose_csv() {
+        let demo = demo_measured_96well_plate();
+        let exported = crate::plate_layout::export_plate_pipetting_csv(&demo);
+        let reparsed = parse_plate_or_dose_csv(&exported).unwrap();
+        let fits1 = fit_all_plate_compounds(&reparsed);
+        assert_eq!(fits1.len(), 3);
+
+        let csv3 = "compound,conc_nM,response\nCompA,0.1,98\nCompA,1,92\nCompA,10,54\nCompA,100,12\nCompA,1000,3\nCompA,10000,2\n";
+        let plate3 = parse_plate_or_dose_csv(csv3).unwrap();
+        let fits3 = fit_all_plate_compounds(&plate3);
+        assert_eq!(fits3.len(), 1);
+        assert!(fits3[0].relative_ec50_nm > 5.0 && fits3[0].relative_ec50_nm < 25.0);
     }
 }

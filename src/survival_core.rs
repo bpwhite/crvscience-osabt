@@ -93,7 +93,7 @@ pub fn parse_survival_csv(raw_csv: &str) -> Result<Vec<SurvivalObservation>, Str
     let mut out = Vec::new();
     let mut header_seen = false;
 
-    for (line_idx, line) in raw_csv.lines().enumerate() {
+    for (line_idx, line) in raw_csv.trim_start_matches('\u{feff}').lines().enumerate() {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
             continue;
@@ -355,15 +355,32 @@ pub fn fit_cox_proportional_hazards(
     if n_events < 2 {
         return Err(String::from("Cox PH regression requires >= 2 uncensored events."));
     }
+    if xs.iter().any(|x| !x.is_finite()) {
+        return Err(String::from("Cox PH covariate contains non-finite value."));
+    }
 
-    let eval_partial = |beta: f64| -> (f64, f64, f64) {
+    let n = xs.len() as f64;
+    let mean_x = xs.iter().sum::<f64>() / n;
+    let var_x = xs.iter().map(|&x| (x - mean_x).powi(2)).sum::<f64>() / n;
+    let sigma_x = var_x.sqrt();
+
+    let eval_partial_z = |zs: &[f64], beta_z: f64| -> (f64, f64, f64) {
         let mut ll = 0.0_f64;
         let mut grad = 0.0_f64;
         let mut info = 0.0_f64;
-        let exps: Vec<f64> = xs.iter().map(|&x| (beta * x).clamp(-30.0, 30.0).exp()).collect();
+        let lin: Vec<f64> = zs.iter().map(|&z| beta_z * z).collect();
 
         for (i, r) in obs.iter().enumerate() {
             if !r.event {
+                continue;
+            }
+            let mut max_lin = f64::NEG_INFINITY;
+            for (j, rj) in obs.iter().enumerate() {
+                if rj.time >= r.time && lin[j] > max_lin {
+                    max_lin = lin[j];
+                }
+            }
+            if !max_lin.is_finite() {
                 continue;
             }
             let mut s0 = 0.0_f64;
@@ -371,40 +388,79 @@ pub fn fit_cox_proportional_hazards(
             let mut s2 = 0.0_f64;
             for (j, rj) in obs.iter().enumerate() {
                 if rj.time >= r.time {
-                    let w = exps[j];
+                    let w = (lin[j] - max_lin).exp();
                     s0 += w;
-                    s1 += xs[j] * w;
-                    s2 += xs[j] * xs[j] * w;
+                    s1 += zs[j] * w;
+                    s2 += zs[j] * zs[j] * w;
                 }
             }
             if s0 > 1e-15 {
-                let mean_x = s1 / s0;
-                let var_x = (s2 / s0 - mean_x * mean_x).max(0.0);
-                ll += beta * xs[i] - s0.ln();
-                grad += xs[i] - mean_x;
-                info += var_x;
+                let risk_mean_z = s1 / s0;
+                let risk_var_z = (s2 / s0 - risk_mean_z * risk_mean_z).max(0.0);
+                ll += lin[i] - (max_lin + s0.ln());
+                grad += zs[i] - risk_mean_z;
+                info += risk_var_z;
             }
         }
         (ll, grad, info)
     };
 
-    let (ll_null, _, _) = eval_partial(0.0);
-    let mut beta = 0.0_f64;
-    for _ in 0..30 {
-        let (_, grad, info) = eval_partial(beta);
+    let zeros = vec![0.0_f64; obs.len()];
+    let (ll_null, _, _) = eval_partial_z(&zeros, 0.0);
+
+    if sigma_x <= 1e-12 {
+        return Ok(CoxPhFit {
+            covariate_name: covariate_label.to_string(),
+            n_subjects: obs.len(),
+            n_events,
+            beta: 0.0,
+            se_beta: 0.0,
+            hazard_ratio: 1.0,
+            hr_ci95: (1.0, 1.0),
+            wald_z: 0.0,
+            p_value: 1.0,
+            partial_log_lik_null: ll_null,
+            partial_log_lik_fit: ll_null,
+        });
+    }
+
+    let zs: Vec<f64> = xs.iter().map(|&x| (x - mean_x) / sigma_x).collect();
+    let mut beta_z = 0.0_f64;
+    let mut ll_curr = ll_null;
+    for _ in 0..64 {
+        let (_, grad, info) = eval_partial_z(&zs, beta_z);
         if info < 1e-12 {
             break;
         }
-        let step = (grad / info).clamp(-2.0, 2.0);
-        beta += step;
-        if step.abs() < 1e-10 {
+        let mut step = (grad / info).clamp(-2.0, 2.0);
+        if step.abs() < 1e-11 {
+            break;
+        }
+        // Backtracking line search to guarantee monotone partial log-likelihood ascent
+        let mut accepted = false;
+        for _ in 0..20 {
+            let cand = (beta_z + step).clamp(-30.0, 30.0);
+            let (ll_cand, _, _) = eval_partial_z(&zs, cand);
+            if ll_cand >= ll_curr - 1e-12 && ll_cand.is_finite() {
+                beta_z = cand;
+                ll_curr = ll_cand;
+                accepted = true;
+                break;
+            }
+            step *= 0.5;
+            if step.abs() < 1e-12 {
+                break;
+            }
+        }
+        if !accepted || step.abs() < 1e-11 {
             break;
         }
     }
 
-    let (ll_fit, _, info_final) = eval_partial(beta);
+    let (ll_fit, _, info_final) = eval_partial_z(&zs, beta_z);
+    let beta = beta_z / sigma_x;
     let se_beta = if info_final > 1e-12 {
-        (1.0 / info_final).sqrt()
+        (1.0 / info_final).sqrt() / sigma_x
     } else {
         0.0
     };
@@ -511,8 +567,42 @@ mod tests {
 
         // Larger fork length reduces hazard (negative beta => HR < 1.0)
         let cox = fit_cox_proportional_hazards(&obs, "fork_len_mm", false).unwrap();
-        assert!(cox.beta < -0.10);
-        assert!(cox.hazard_ratio < 0.90);
+        assert!((cox.hazard_ratio - 0.346_977).abs() < 1e-3, "got HR {}", cox.hazard_ratio);
+        assert!(cox.hr_ci95.0 > 0.15 && cox.hr_ci95.1 < 0.70);
         assert!(cox.p_value < 0.001);
+
+        let cox_grp = fit_cox_proportional_hazards(&obs, "Group", true).unwrap();
+        assert!((cox_grp.hazard_ratio - 7.8096).abs() < 1e-2, "got Group HR {}", cox_grp.hazard_ratio);
+    }
+
+    #[test]
+    fn cox_ph_scale_invariance_and_zero_variance() {
+        let obs = parse_survival_csv(demo_survival_cohort_csv()).unwrap();
+        let cox_orig = fit_cox_proportional_hazards(&obs, "fork_len_mm", false).unwrap();
+
+        let scaled: Vec<SurvivalObservation> = obs
+            .iter()
+            .map(|r| SurvivalObservation {
+                covariate: r.covariate * 1000.0,
+                ..r.clone()
+            })
+            .collect();
+        let cox_scaled = fit_cox_proportional_hazards(&scaled, "fork_len_um", false).unwrap();
+        assert!((cox_scaled.beta - cox_orig.beta / 1000.0).abs() < 1e-9);
+        assert!((cox_scaled.wald_z - cox_orig.wald_z).abs() < 1e-6);
+        assert!((cox_scaled.p_value - cox_orig.p_value).abs() < 1e-9);
+        assert!((cox_scaled.partial_log_lik_fit - cox_orig.partial_log_lik_fit).abs() < 1e-6);
+
+        let const_obs: Vec<SurvivalObservation> = obs
+            .iter()
+            .map(|r| SurvivalObservation {
+                covariate: 42.0,
+                ..r.clone()
+            })
+            .collect();
+        let cox_zero = fit_cox_proportional_hazards(&const_obs, "constant", false).unwrap();
+        assert!((cox_zero.hazard_ratio - 1.0).abs() < 1e-12);
+        assert!((cox_zero.se_beta).abs() < 1e-12);
+        assert!((cox_zero.p_value - 1.0).abs() < 1e-12);
     }
 }

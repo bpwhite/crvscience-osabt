@@ -243,7 +243,7 @@ fn parse_multi_fasta_contigs(raw_fa: &str) -> Result<Vec<(String, String)>, Stri
     let mut cur_name = String::from("contig_1");
     let mut cur_seq = String::new();
 
-    for line in raw_fa.lines() {
+    for line in raw_fa.trim_start_matches('\u{feff}').lines() {
         let t = line.trim();
         if t.is_empty() {
             continue;

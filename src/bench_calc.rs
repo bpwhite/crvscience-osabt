@@ -112,7 +112,7 @@ pub fn parse_vendor_coa_table(
     target_stock_um: f64,
 ) -> Result<Vec<OligoResuspensionPlan>, OligoError> {
     let mut plans = Vec::new();
-    for line in table_text.lines() {
+    for line in table_text.trim_start_matches('\u{feff}').lines() {
         let l = line.trim();
         if l.is_empty() || l.starts_with('#') {
             continue;

@@ -158,30 +158,7 @@ impl EpiTuiState {
     }
 }
 
-/// Parses daily case counts from whitespace, comma, or multi-column CSV text (uses last numeric column per row).
-pub fn parse_incidence_series(raw: &str) -> Result<Vec<f64>, String> {
-    let mut vals = Vec::new();
-    for line in raw.lines() {
-        let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
-            continue;
-        }
-        let tokens: Vec<&str> = t.split([',', '\t', ';', ' ']).filter(|s| !s.is_empty()).collect();
-        if let Some(last) = tokens.last() {
-            if let Ok(v) = last.parse::<f64>() {
-                if v >= 0.0 && v.is_finite() {
-                    vals.push(v);
-                }
-            }
-        }
-    }
-    if vals.len() < 3 {
-        return Err(String::from(
-            "Could not parse >= 3 non-negative daily incidence counts from input file.",
-        ));
-    }
-    Ok(vals)
-}
+pub use crate::epi_models::parse_incidence_series;
 
 /// Launches the interactive 4-tab `Ratatui` terminal workbench for `osabt epi`.
 pub fn run_epi_tui(incidence_csv: Option<PathBuf>) -> Result<(), String> {

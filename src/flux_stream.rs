@@ -79,7 +79,7 @@ fn schmidt_o2(temp_c: f64) -> f64 {
 pub fn parse_stream_do_csv(raw_csv: &str) -> Result<Vec<StreamDoPoint>, String> {
     let mut pts = Vec::new();
     let mut hdr = false;
-    for (idx, line) in raw_csv.lines().enumerate() {
+    for (idx, line) in raw_csv.trim_start_matches('\u{feff}').lines().enumerate() {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
             continue;

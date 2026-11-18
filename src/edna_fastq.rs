@@ -140,6 +140,7 @@ pub fn calc_fastq_expected_errors(qual_phred33: &[u8]) -> f64 {
 /// Parses standard 4-line Phred+33 FASTQ records from text.
 pub fn parse_fastq_str(raw_fastq: &str) -> Result<Vec<FastqRead>, String> {
     let lines: Vec<&str> = raw_fastq
+        .trim_start_matches('\u{feff}')
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
@@ -202,7 +203,7 @@ pub fn parse_fastq_str(raw_fastq: &str) -> Result<Vec<FastqRead>, String> {
 pub fn parse_barcode_sheet_csv(raw_csv: &str) -> Result<Vec<DualBarcodeSample>, String> {
     let mut out = Vec::new();
     let mut header_seen = false;
-    for (idx, line) in raw_csv.lines().enumerate() {
+    for (idx, line) in raw_csv.trim_start_matches('\u{feff}').lines().enumerate() {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
             continue;

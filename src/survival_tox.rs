@@ -70,7 +70,7 @@ pub struct EcotoxLc50Report {
 pub fn parse_ecotox_csv(raw_csv: &str) -> Result<Vec<EcotoxBioassayPoint>, String> {
     let mut pts = Vec::new();
     let mut hdr = false;
-    for (idx, line) in raw_csv.lines().enumerate() {
+    for (idx, line) in raw_csv.trim_start_matches('\u{feff}').lines().enumerate() {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
             continue;
@@ -105,7 +105,7 @@ pub fn parse_ecotox_csv(raw_csv: &str) -> Result<Vec<EcotoxBioassayPoint>, Strin
                 idx + 1
             ));
         }
-        if conc > 0.0 {
+        if conc > 0.0 && conc.is_finite() {
             pts.push(EcotoxBioassayPoint {
                 concentration: conc,
                 exposed_n: exposed,
@@ -118,7 +118,7 @@ pub fn parse_ecotox_csv(raw_csv: &str) -> Result<Vec<EcotoxBioassayPoint>, Strin
             "Ecotoxicology LC50 fitting requires at least 3 positive concentrations.",
         ));
     }
-    pts.sort_by(|a, b| a.concentration.partial_cmp(&b.concentration).unwrap());
+    pts.sort_by(|a, b| a.concentration.partial_cmp(&b.concentration).unwrap_or(std::cmp::Ordering::Equal));
     Ok(pts)
 }
 
@@ -291,8 +291,16 @@ pub fn render_survival_and_lc50_svg(
         );
     }
 
-    let min_lc = points.first().map(|p| p.concentration.log10()).unwrap_or(0.0) - 0.25;
-    let max_lc = points.last().map(|p| p.concentration.log10()).unwrap_or(2.0) + 0.25;
+    let (lo_lc, hi_lc) = points
+        .iter()
+        .filter(|p| p.concentration > 0.0 && p.concentration.is_finite())
+        .map(|p| p.concentration.log10())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), lc| (lo.min(lc), hi.max(lc)));
+    let (min_lc, max_lc) = if lo_lc.is_finite() && hi_lc.is_finite() {
+        (lo_lc - 0.25, hi_lc.max(lo_lc + 1e-3) + 0.25)
+    } else {
+        (0.0, 2.0)
+    };
     let span_lc = (max_lc - min_lc).max(1e-6);
     let map_x2 = |lc: f64| p2_x + ((lc - min_lc) / span_lc).clamp(0.0, 1.0) * p2_w;
 
@@ -344,6 +352,24 @@ pub fn render_survival_and_lc50_svg(
 }
 
 
+/// Formats a log10-concentration axis tick into clean concentration units (`µg/L`)
+/// without raw `10^x` notation.
+pub fn format_probit_conc_tick(log10_conc: f64) -> String {
+    let conc = 10_f64.powf(log10_conc);
+    if !conc.is_finite() || conc <= 0.0 {
+        return String::from("0");
+    }
+    if conc >= 100.0 {
+        format!("{conc:.0}")
+    } else if conc >= 1.0 {
+        format!("{conc:.1}")
+    } else if conc >= 0.000_999_5 {
+        format!("{conc:.3}")
+    } else {
+        format!("{conc:.2e}")
+    }
+}
+
 /// Built-in 6-concentration 96-h Copper Sulfate (`CuSO4`, `ug/L`) acute *Daphnia magna* bioassay (`n=30/conc`).
 pub fn demo_ecotox_lc50_csv() -> &'static str {
     "\
@@ -370,5 +396,27 @@ mod tests {
         assert!(prob.lc50 > 20.0 && prob.lc50 < 35.0);
         assert!(logit.lc50 > 20.0 && logit.lc50 < 35.0);
         assert!(prob.lc10 < prob.lc50 && prob.lc50 < prob.lc90);
+    }
+
+    #[test]
+    fn formats_probit_conc_ticks_without_power_notation() {
+        for (lx, expected) in [
+            (5.0_f64.log10(), "5.0"),
+            (27.0_f64.log10(), "27.0"),
+            (160.0_f64.log10(), "160"),
+            (0.25_f64.log10(), "0.250"),
+            (-4.0, "1.00e-4"),
+        ] {
+            let s = format_probit_conc_tick(lx);
+            assert!(!s.contains("10^"), "unexpected raw exponent in '{s}'");
+            assert_eq!(s, expected);
+        }
+    }
+
+    #[test]
+    fn parses_bom_ecotox_csv_cleanly() {
+        let raw = format!("\u{feff}{}", demo_ecotox_lc50_csv());
+        let pts = parse_ecotox_csv(&raw).unwrap();
+        assert_eq!(pts.len(), 6);
     }
 }

@@ -770,6 +770,7 @@ fn split_newick_statements(s: &str) -> Vec<String> {
 
 /// Parses a Maddison, Swofford & Maddison (1997) `#NEXUS` file (`BEGIN TREES;`, optional `TRANSLATE` map).
 pub fn parse_nexus_trees(text: &str) -> Result<Vec<PhyloTree>, String> {
+    let text = text.trim_start_matches('\u{feff}');
     let upper = text.to_ascii_uppercase();
     let begin_idx = upper
         .find("BEGIN TREES;")
@@ -848,7 +849,7 @@ pub fn parse_nexus_trees(text: &str) -> Result<Vec<PhyloTree>, String> {
 
 /// Recursive-descent parser for a single Newick / NHX tree string.
 pub fn parse_newick(tree_name: &str, newick: &str) -> Result<PhyloTree, String> {
-    let bytes: Vec<char> = newick.trim().chars().collect();
+    let bytes: Vec<char> = newick.trim_start_matches('\u{feff}').trim().chars().collect();
     let mut pos = 0usize;
     let mut nodes: Vec<PhyloNode> = Vec::new();
 
