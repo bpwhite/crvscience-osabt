@@ -33,7 +33,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, Tabs, Wrap};
 use ratatui::Terminal;
 
-use crate::tui_util::run_tui_session;
+use crate::tui_util::{osabt_about_status_line, run_tui_session};
 
 use crate::survival_core::{
     compute_kaplan_meier_curves, compute_log_rank_test, demo_survival_cohort_csv,
@@ -187,12 +187,17 @@ fn run_loop(
                             &state.lc50_report,
                             "OSABT Survival & Ecotoxicology",
                         );
-                        if fs::write("survival_lc50.svg", svg).is_ok() {
-                            state.status_msg = String::from("Exported survival_lc50.svg!");
-                        } else {
-                            state.status_msg =
-                                String::from("Export failed: check write permissions.");
+                        match fs::write("survival_lc50.svg", svg) {
+                            Ok(()) => {
+                                state.status_msg = String::from("Exported survival_lc50.svg!");
+                            }
+                            Err(e) => {
+                                state.status_msg = format!("Export failed: {e}");
+                            }
                         }
+                    }
+                    KeyCode::F(1) | KeyCode::Char('?') => {
+                        state.status_msg = osabt_about_status_line();
                     }
                     _ => {}
                 }
@@ -230,7 +235,8 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, state: &SurvivalTuiState) {
 
     let tabs = Tabs::new(titles)
         .block(Block::default().borders(Borders::ALL).title(format!(
-            " OSABT Survival Studio (v1.9.0) — {} Cohort Strata | {} LC50 = {:.2} ",
+            " OSABT Survival Studio (v{}) — {} Cohort Strata | {} LC50 = {:.2} ",
+            env!("CARGO_PKG_VERSION"),
             state.curves.len(),
             state.link.label(),
             state.lc50_report.lc50

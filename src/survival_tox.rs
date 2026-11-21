@@ -23,7 +23,7 @@
 use std::fmt::Write as _;
 
 use crate::survival_core::{KaplanMeierCurve, LogRankTestResult};
-use crate::svg_util::xml_escape;
+use crate::svg_util::{begin_svg_canvas, format_polyline_points, xml_escape};
 use crate::wildlife_occupancy::{diag_hessian_se, nelder_mead_minimize};
 
 /// Single concentration-mortality bioassay group.
@@ -232,15 +232,7 @@ pub fn render_survival_and_lc50_svg(
     let ph = 305.0_f64;
 
     const COLORS: &[&str] = &["#2563eb", "#dc2626", "#16a34a", "#9333ea"];
-    let mut svg = String::with_capacity(14_336);
-    let _ = writeln!(
-        svg,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {width:.0} {height:.0}\" width=\"{width:.0}\" height=\"{height:.0}\">"
-    );
-    let _ = writeln!(
-        svg,
-        "  <rect x=\"0\" y=\"0\" width=\"{width:.0}\" height=\"{height:.0}\" fill=\"#ffffff\"/>"
-    );
+    let mut svg = begin_svg_canvas(14_336, width, height, Some("#ffffff"));
     let lr_txt = log_rank
         .map(|l| format!(" (Log-Rank p = {:.4})", l.p_value))
         .unwrap_or_default();
@@ -267,12 +259,12 @@ pub fn render_survival_and_lc50_svg(
 
     for (idx, c) in curves.iter().enumerate() {
         let col = COLORS[idx % COLORS.len()];
-        let mut poly = String::new();
+        let mut pts = Vec::with_capacity(c.steps.len() * 2);
         let mut prev_s = 1.0_f64;
         for st in &c.steps {
             let xp = map_x1(st.time);
-            let _ = write!(poly, "{xp:.1},{:.1} ", map_y(prev_s));
-            let _ = write!(poly, "{xp:.1},{:.1} ", map_y(st.survival_s));
+            pts.push((xp, map_y(prev_s)));
+            pts.push((xp, map_y(st.survival_s)));
             if st.n_censored > 0 {
                 let yc = map_y(st.survival_s);
                 let _ = writeln!(
@@ -287,7 +279,7 @@ pub fn render_survival_and_lc50_svg(
         let _ = writeln!(
             svg,
             "  <polyline points=\"{}\" fill=\"none\" stroke=\"{col}\" stroke-width=\"2.4\"/>",
-            poly.trim()
+            format_polyline_points(&pts)
         );
     }
 
@@ -304,7 +296,7 @@ pub fn render_survival_and_lc50_svg(
     let span_lc = (max_lc - min_lc).max(1e-6);
     let map_x2 = |lc: f64| p2_x + ((lc - min_lc) / span_lc).clamp(0.0, 1.0) * p2_w;
 
-    let mut curve_pts = String::new();
+    let mut curve_pts = Vec::with_capacity(49);
     for k in 0..=48 {
         let lc = min_lc + (k as f64 / 48.0) * span_lc;
         let z = lc50_rep.intercept_alpha + lc50_rep.slope_beta * lc;
@@ -312,14 +304,17 @@ pub fn render_survival_and_lc50_svg(
             DoseResponseLink::Probit => probit_norm_cdf(z),
             DoseResponseLink::Logit => 1.0 / (1.0 + (-z).exp()),
         };
-        let _ = write!(curve_pts, "{:.1},{:.1} ", map_x2(lc), map_y(prob));
+        curve_pts.push((map_x2(lc), map_y(prob)));
     }
     let _ = writeln!(
         svg,
         "  <polyline points=\"{}\" fill=\"none\" stroke=\"#2563eb\" stroke-width=\"2.4\"/>",
-        curve_pts.trim()
+        format_polyline_points(&curve_pts)
     );
     for pt in points {
+        if pt.concentration <= 0.0 || !pt.concentration.is_finite() || pt.exposed_n == 0 {
+            continue;
+        }
         let xp = map_x2(pt.concentration.log10());
         let yp = map_y((pt.dead_n as f64) / (pt.exposed_n as f64));
         let _ = writeln!(svg, "  <circle cx=\"{xp:.1}\" cy=\"{yp:.1}\" r=\"4.5\" fill=\"#dc2626\"/>");
@@ -418,5 +413,29 @@ mod tests {
         let raw = format!("\u{feff}{}", demo_ecotox_lc50_csv());
         let pts = parse_ecotox_csv(&raw).unwrap();
         assert_eq!(pts.len(), 6);
+    }
+
+    #[test]
+    fn svg_render_skips_zero_concentration_and_zero_exposed_controls() {
+        let fit_pts = parse_ecotox_csv(demo_ecotox_lc50_csv()).unwrap();
+        let rep = fit_ecotox_lc50(&fit_pts, DoseResponseLink::Probit).unwrap();
+        let mut with_controls = vec![
+            EcotoxBioassayPoint {
+                concentration: 0.0,
+                exposed_n: 0,
+                dead_n: 0,
+            },
+            EcotoxBioassayPoint {
+                concentration: f64::NAN,
+                exposed_n: 10,
+                dead_n: 0,
+            },
+        ];
+        with_controls.extend(fit_pts);
+        let svg = render_survival_and_lc50_svg(&[], None, &with_controls, &rep, "Control Guard");
+        assert!(svg.starts_with("<svg "));
+        assert!(!svg.contains("NaN"));
+        assert!(!svg.contains("inf"));
+        assert!(!svg.contains("Inf"));
     }
 }

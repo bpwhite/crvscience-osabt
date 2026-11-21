@@ -155,6 +155,10 @@ pub fn show_paste_modal(
     if !modal.open {
         return None;
     }
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        modal.open = false;
+        return None;
+    }
     let mut applied: Option<(usize, String)> = None;
     let mut open = modal.open;
     let title = if modal.title.is_empty() {
@@ -228,5 +232,32 @@ mod tests {
         assert!(status.starts_with("Write error"));
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn paste_modal_closes_on_escape() {
+        let ctx = egui::Context::default();
+        let mut modal = PasteModalState::default();
+        modal.open_for(0, "Paste Test", "Hint", "abc");
+        assert!(modal.open);
+
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1024.0, 768.0),
+        ));
+        raw.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut applied = None;
+        let _ = ctx.run(raw, |c| {
+            applied = show_paste_modal(c, &mut modal);
+        });
+        assert!(applied.is_none());
+        assert!(!modal.open, "Escape should close paste modal");
     }
 }

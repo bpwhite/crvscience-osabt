@@ -6,8 +6,8 @@ rust-version = "1.75"
 authors = ["Bryan P. White <https://crvscience.com>"]
 license = "GPL-3.0-or-later"
 description = "Open Source Ad-hoc Biology Tools (OSABT) — unified 20-tool GPL-3.0 CLI, TUI, and GUI biology toolkit for the CRV Science Network."
-repository = "https://github.com/bpwhite/osabt"
-homepage = "https://crvscience.com/labs"
+repository = "https://github.com/bpwhite/crvscience-osabt"
+homepage = "https://crvscience.com/apps"
 keywords = ["biology", "bioinformatics", "ecology", "ecophysiology", "biostatistics"]
 categories = ["science", "command-line-utilities", "gui", "wasm"]
 

@@ -35,7 +35,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap};
 use ratatui::{Frame, Terminal};
 
-use crate::tui_util::run_tui_session_io;
+use crate::tui_util::{osabt_about_status_line, run_tui_session_io};
 
 use crate::bench_calc::{
     build_pcr_master_mix, calc_buffer_recipe, calc_oligo_resuspension, rpm_to_rcf, BufferSystem,
@@ -163,7 +163,7 @@ impl BenchApp {
 
     fn export_markdown_sheet(&mut self) {
         let (ta, bp) = self.active_ta_and_bp();
-        if let Ok(plan) = build_pcr_master_mix(
+        match build_pcr_master_mix(
             self.polymerase,
             self.rxn_count,
             25.0,
@@ -173,15 +173,20 @@ impl BenchApp {
             bp,
             false,
         ) {
-            let md = plan.to_markdown_sheet("OSABT Bench Export");
-            match fs::write("osabt_bench_sheet.md", md) {
-                Ok(_) => {
-                    self.status_msg =
-                        String::from("Exported bench checklist -> ./osabt_bench_sheet.md");
+            Ok(plan) => {
+                let md = plan.to_markdown_sheet("OSABT Bench Export");
+                match fs::write("osabt_bench_sheet.md", md) {
+                    Ok(_) => {
+                        self.status_msg =
+                            String::from("Exported bench checklist -> ./osabt_bench_sheet.md");
+                    }
+                    Err(e) => {
+                        self.status_msg = format!("Export error: {e}");
+                    }
                 }
-                Err(e) => {
-                    self.status_msg = format!("Export failed: {e}");
-                }
+            }
+            Err(e) => {
+                self.status_msg = format!("Export error: {e}");
             }
         }
     }
@@ -225,7 +230,8 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Resu
             }
 
             match key.code {
-                KeyCode::Char('q') => return Ok(()),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                KeyCode::F(1) | KeyCode::Char('?') => app.status_msg = osabt_about_status_line(),
                 KeyCode::Tab => app.active_tab = (app.active_tab + 1) % 4,
                 KeyCode::BackTab => app.active_tab = (app.active_tab + 3) % 4,
                 KeyCode::Char('1') => app.active_tab = 0,
@@ -360,7 +366,10 @@ fn render_ui(f: &mut Frame, app: &BenchApp) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" OSABT Bench v0.1.0 • CRV Science Network (GPL-3.0) "),
+                .title(format!(
+                    " OSABT Bench v{} • CRV Science Network (GPL-3.0) ",
+                    env!("CARGO_PKG_VERSION")
+                )),
         )
         .select(app.active_tab)
         .highlight_style(

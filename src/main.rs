@@ -129,7 +129,7 @@ enum OsabtTool {
     /// Tool #19: Kaplan–Meier survival, Mantel log-rank, Cox proportional hazards (`HR`), & Finney Probit/Logit `LC50` studio (CLI + Ratatui TUI).
     Survival(SurvivalArgs),
 
-    /// Tool #20: Leaf `FvCB` photosynthesis ($A\text{–}C_i$) & Odum (1956) open-channel stream `GPP`/`ER` metabolism studio (CLI + egui GUI).
+    /// Tool #20: Leaf `FvCB` photosynthesis (A–Ci) & Odum (1956) open-channel stream `GPP`/`ER` metabolism studio (CLI + egui GUI).
     Flux(FluxArgs),
 
     /// Launch OSABT Flux Studio GUI (or capture `--screenshot <PNG_PATH>` headlessly).

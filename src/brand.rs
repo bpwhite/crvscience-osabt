@@ -132,6 +132,12 @@ fn decode_largest_ico_rgba(ico: &[u8]) -> Option<egui::IconData> {
 
 /// Renders the interactive `About OSABT` modal window when `*open` is true.
 pub fn draw_about_window(ctx: &egui::Context, open: &mut bool) {
+    if !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+        *open = !*open;
+    }
+    if *open && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        *open = false;
+    }
     if !*open {
         return;
     }
@@ -195,5 +201,38 @@ mod tests {
         let has_opaque = icon.rgba.chunks_exact(4).any(|p| p[3] == 255);
         let has_transparent = icon.rgba.chunks_exact(4).any(|p| p[3] == 0);
         assert!(has_opaque && has_transparent);
+    }
+
+    #[test]
+    fn about_window_toggles_with_f1_and_closes_with_escape() {
+        let ctx = egui::Context::default();
+        let mut open = false;
+        let run_key = |ctx: &egui::Context, open: &mut bool, key: egui::Key| {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1024.0, 768.0),
+            ));
+            raw.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            let _ = ctx.run(raw, |c| draw_about_window(c, open));
+        };
+
+        run_key(&ctx, &mut open, egui::Key::F1);
+        assert!(open, "F1 should open About OSABT modal");
+
+        run_key(&ctx, &mut open, egui::Key::Escape);
+        assert!(!open, "Escape should close About OSABT modal");
+
+        run_key(&ctx, &mut open, egui::Key::F1);
+        assert!(open, "F1 should reopen About OSABT modal");
+
+        run_key(&ctx, &mut open, egui::Key::F1);
+        assert!(!open, "Second F1 should toggle About OSABT modal closed");
     }
 }

@@ -146,3 +146,11 @@ where
     session.finish_io()?;
     res
 }
+
+/// Returns the formatted OSABT copyright/version status line for interactive TUIs.
+pub fn osabt_about_status_line() -> String {
+    format!(
+        "OSABT v{} — Copyright CRV Science Network (https://crvscience.com)",
+        env!("CARGO_PKG_VERSION")
+    )
+}

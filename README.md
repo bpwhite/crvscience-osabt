@@ -60,7 +60,7 @@ cargo run -- flux gui
 | 17 | `osabt crispr` | CLI + TUI | `SpCas9`/`SaCas9`/`LbCas12a` scanning, Doench Rule Set 2 & `CFD` off-target scoring, `CBE`/`ABE` bystander windows, Golden Gate oligos |
 | 18 | `osabt flow` | CLI + GUI | Binary ISAC `FCS 3.1` parser/writer, `$SPILLOVER` inversion, Parks (2006) `Logicle` scaling, polygon/quadrant gating |
 | 19 | `osabt survival` | CLI + TUI | Kaplan–Meier product-limit curves, Mantel log-rank test, Cox (1972) PH regression, Finney Probit/Logit acute `LC50` |
-| 20 | `osabt flux` | CLI + GUI | Farquhar–von Caemmerer–Berry (`FvCB`) $A\text{–}C_i$ curve fitting (`Vcmax`, `Jmax`, `TPU`, `Rd`) & Odum (1956) diel `DO` stream metabolism |
+| 20 | `osabt flux` | CLI + GUI | Farquhar–von Caemmerer–Berry (`FvCB`) A–Ci curve fitting (`Vcmax`, `Jmax`, `TPU`, `Rd`) & Odum (1956) diel `DO` stream metabolism |
 
 ## License
 
