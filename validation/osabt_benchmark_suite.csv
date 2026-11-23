@@ -1,8 +1,8 @@
 test_id,module,engine_function,metric,value,unit
-T1,flux_leaf,fit_fvcb_aci_curve,vcmax,85.733494,umol m^-2 s^-1
-T1,flux_leaf,fit_fvcb_aci_curve,jmax,151.876300,umol m^-2 s^-1
-T1,flux_leaf,fit_fvcb_aci_curve,tpu,10.562911,umol m^-2 s^-1
-T1,flux_leaf,fit_fvcb_aci_curve,r_squared,0.999957,dimensionless
+T1,flux_leaf,fit_fvcb_aci_curve,vcmax,85.734979,umol m^-2 s^-1
+T1,flux_leaf,fit_fvcb_aci_curve,jmax,151.875397,umol m^-2 s^-1
+T1,flux_leaf,fit_fvcb_aci_curve,tpu,10.563005,umol m^-2 s^-1
+T1,flux_leaf,fit_fvcb_aci_curve,r_squared,0.999956,dimensionless
 T1,thermo,calc_perfect_duplex,tm_salt_corrected_c,64.825998,C
 T1,thermo,calc_perfect_duplex,delta_g_37_kcal,-25.846215,kcal/mol
 T1,survival_core,compute_log_rank_test,chi_square,17.754147,chi2

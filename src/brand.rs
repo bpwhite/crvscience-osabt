@@ -132,10 +132,12 @@ fn decode_largest_ico_rgba(ico: &[u8]) -> Option<egui::IconData> {
 
 /// Renders the interactive `About OSABT` modal window when `*open` is true.
 pub fn draw_about_window(ctx: &egui::Context, open: &mut bool) {
-    if !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+    if !ctx.wants_keyboard_input()
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F1))
+    {
         *open = !*open;
     }
-    if *open && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if *open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
         *open = false;
     }
     if !*open {

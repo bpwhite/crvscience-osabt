@@ -11,12 +11,12 @@
   "tests": {
     "t1_ecophysiology_thermo_and_survival": {
       "engine_calls": ["flux_leaf::fit_fvcb_aci_curve", "thermo::calc_perfect_duplex", "survival_core::compute_kaplan_meier_curves", "survival_core::compute_log_rank_test", "survival_core::fit_cox_proportional_hazards", "survival_tox::fit_ecotox_lc50"],
-      "fvcb_vcmax_umol_m2_s": 85.733494,
-      "fvcb_jmax_umol_m2_s": 151.876300,
-      "fvcb_tpu_umol_m2_s": 10.562911,
-      "fvcb_rd_umol_m2_s": 1.108734,
-      "fvcb_r_squared": 0.999957,
-      "fvcb_rmse": 0.069209,
+      "fvcb_vcmax_umol_m2_s": 85.734979,
+      "fvcb_jmax_umol_m2_s": 151.875397,
+      "fvcb_tpu_umol_m2_s": 10.563005,
+      "fvcb_rd_umol_m2_s": 1.109015,
+      "fvcb_r_squared": 0.999956,
+      "fvcb_rmse": 0.069254,
       "duplex_20mer_tm_salt_corrected_c": 64.8260,
       "duplex_20mer_delta_g_37_kcal": -25.8462,
       "kaplan_meier_groups": 2,

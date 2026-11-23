@@ -104,7 +104,7 @@ impl EcosoundStudioApp {
             drag_start_pos: None,
             selected_event_idx: Some(0),
             status_bar: String::from(
-                "Drag on spectrogram to draw custom Raven selection box | Right-click box to delete | Adjust band & click Auto-Detect.",
+                "Drag on spectrogram to draw Raven selection box | Delete/Backspace or right-click box to delete | Adjust band & click Auto-Detect.",
             ),
             status_is_error: false,
             about_open: false,
@@ -291,6 +291,7 @@ impl eframe::App for EcosoundStudioApp {
 impl EcosoundStudioApp {
     /// Renders all EcoSound Studio panels onto `ctx`.
     pub fn draw_panels(&mut self, ctx: &egui::Context) {
+        let wants_kb_start = ctx.wants_keyboard_input();
         self.ensure_spectrogram_texture(ctx);
 
         egui::TopBottomPanel::top("ecosound_top_bar").show(ctx, |ui| {
@@ -481,18 +482,27 @@ impl EcosoundStudioApp {
                     egui::Grid::new("eco_indices_grid")
                         .striped(true)
                         .show(ui, |ui| {
-                            ui.label("ACI (Pieretti 2011):");
+                            ui.label("ACI (Pieretti 2011):")
+                                .on_hover_text(
+                                    "Acoustic Complexity Index (Pieretti et al., 2011). Sum of frame-to-frame amplitude modulation |I_k - I_{k+1}| / sum(I_k) in 5 s clumps across the biophony band. Range: >= 0 (unitless; also normalized per minute). Higher values indicate complex biological vocal activity vs. steady noise.",
+                                );
                             ui.strong(format!(
                                 "{:.1} ({:.1}/min)",
                                 self.indices.aci_total, self.indices.aci_per_minute
                             ));
                             ui.end_row();
 
-                            ui.label("NDSI (Kasten 2012):");
+                            ui.label("NDSI (Kasten 2012):")
+                                .on_hover_text(
+                                    "Normalized Difference Soundscape Index (Kasten et al., 2012): (Biophony - Anthrophony) / (Biophony + Anthrophony). Range: -1.0 to +1.0 (unitless). +1.0 = pure biophony; -1.0 = pure low-frequency anthropogenic noise.",
+                                );
                             ui.strong(format!("{:+.3}", self.indices.ndsi));
                             ui.end_row();
 
-                            ui.label("Entropy H (Sueur 2008):");
+                            ui.label("Entropy H (Sueur 2008):")
+                                .on_hover_text(
+                                    "Acoustic Entropy Index H = Ht x Hf (Sueur et al., 2008), multiplying normalized temporal amplitude-envelope Shannon entropy (Ht) and spectral energy entropy (Hf). Range: 0.0 to 1.0 (unitless). Near 0 = pure tone/single pulse; near 1.0 = broadband or multi-species soundscape.",
+                                );
                             ui.strong(format!(
                                 "{:.3} (Ht={:.2}, Hf={:.2})",
                                 self.indices.acoustic_entropy_h,
@@ -501,7 +511,10 @@ impl EcosoundStudioApp {
                             ));
                             ui.end_row();
 
-                            ui.label("ADI / AEI (Villanueva 2011):");
+                            ui.label("ADI / AEI (Villanueva 2011):")
+                                .on_hover_text(
+                                    "Acoustic Diversity Index (ADI, Shannon entropy across 1 kHz bands above -50 dBFS; range >= 0, nats, higher = even multi-band occupancy) and Acoustic Evenness Index (AEI, Gini inequality across those bands; range 0.0 to 1.0, unitless).",
+                                );
                             ui.strong(format!(
                                 "{:.3} / {:.3}",
                                 self.indices.adi_shannon, self.indices.aei_gini
@@ -610,17 +623,37 @@ impl EcosoundStudioApp {
                 Vec2::new(ui.available_width(), canvas_h),
                 Sense::click_and_drag(),
             );
-            let rect = resp.rect;
-            painter.rect_filled(rect, 4.0, Color32::from_rgb(12, 18, 30));
+            let outer = resp.rect;
+            painter.rect_filled(outer, 4.0, Color32::from_rgb(12, 18, 30));
+
+            let left_pad = 56.0_f32;
+            let right_pad = 72.0_f32;
+            let top_pad = 22.0_f32;
+            let bottom_pad = 36.0_f32;
+            let spec_rect = Rect::from_min_max(
+                Pos2::new(
+                    (outer.left() + left_pad).min(outer.right() - 40.0),
+                    (outer.top() + top_pad).min(outer.bottom() - 40.0),
+                ),
+                Pos2::new(
+                    (outer.right() - right_pad).max(outer.left() + left_pad + 40.0),
+                    (outer.bottom() - bottom_pad).max(outer.top() + top_pad + 40.0),
+                ),
+            );
 
             if let Some(tex) = &self.texture {
                 painter.image(
                     tex.id(),
-                    rect,
+                    spec_rect,
                     Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                     Color32::WHITE,
                 );
             }
+            painter.rect_stroke(
+                spec_rect,
+                0.0,
+                Stroke::new(1.0_f32, Color32::from_rgb(100, 116, 139)),
+            );
 
             let dur = self.recording.duration_seconds().max(1e-6);
             let f_min = *self.spectrogram.bin_freqs_hz.first().unwrap_or(&0.0);
@@ -631,20 +664,134 @@ impl EcosoundStudioApp {
                 .unwrap_or(&self.recording.nyquist_hz());
             let f_span = (f_max - f_min).max(1.0);
 
-            let map_x = |t: f64| rect.left() + ((t / dur).clamp(0.0, 1.0) as f32) * rect.width();
-            let map_y = |f: f64| {
-                rect.bottom() - (((f - f_min) / f_span).clamp(0.0, 1.0) as f32) * rect.height()
+            let tick_col = Color32::from_rgb(148, 163, 184);
+            let lbl_col = Color32::from_rgb(203, 213, 225);
+            for k in 0..=5 {
+                let u = (k as f32) / 5.0;
+                let tx = spec_rect.left() + u * spec_rect.width();
+                let t_val = (u as f64) * dur;
+                painter.line_segment(
+                    [
+                        Pos2::new(tx, spec_rect.bottom()),
+                        Pos2::new(tx, spec_rect.bottom() + 4.0),
+                    ],
+                    Stroke::new(1.0_f32, tick_col),
+                );
+                painter.text(
+                    Pos2::new(tx, spec_rect.bottom() + 6.0),
+                    egui::Align2::CENTER_TOP,
+                    if dur >= 10.0 {
+                        format!("{t_val:.1}s")
+                    } else {
+                        format!("{t_val:.2}s")
+                    },
+                    egui::FontId::monospace(10.5),
+                    lbl_col,
+                );
+
+                let fy = spec_rect.bottom() - u * spec_rect.height();
+                let f_val = f_min + (u as f64) * f_span;
+                painter.line_segment(
+                    [
+                        Pos2::new(spec_rect.left() - 4.0, fy),
+                        Pos2::new(spec_rect.left(), fy),
+                    ],
+                    Stroke::new(1.0_f32, tick_col),
+                );
+                let f_lbl = if f_max >= 2_000.0 {
+                    format!("{:.1}k", f_val / 1000.0)
+                } else {
+                    format!("{f_val:.0}")
+                };
+                painter.text(
+                    Pos2::new(spec_rect.left() - 7.0, fy),
+                    egui::Align2::RIGHT_CENTER,
+                    f_lbl,
+                    egui::FontId::monospace(10.5),
+                    lbl_col,
+                );
+            }
+            painter.text(
+                Pos2::new(spec_rect.left() - 7.0, spec_rect.top() - 6.0),
+                egui::Align2::RIGHT_BOTTOM,
+                if f_max >= 2_000.0 { "kHz" } else { "Hz" },
+                egui::FontId::monospace(10.0),
+                tick_col,
+            );
+            painter.text(
+                Pos2::new(spec_rect.center().x, outer.bottom() - 4.0),
+                egui::Align2::CENTER_BOTTOM,
+                "Time (s)",
+                egui::FontId::proportional(11.0),
+                tick_col,
+            );
+
+            // Vertical dBFS colorbar legend on the right side of the spectrogram
+            let bar_w = 14.0_f32;
+            let bar_rect = Rect::from_min_max(
+                Pos2::new(spec_rect.right() + 14.0, spec_rect.top()),
+                Pos2::new(spec_rect.right() + 14.0 + bar_w, spec_rect.bottom()),
+            );
+            let steps = 32usize;
+            let step_h = bar_rect.height() / (steps as f32);
+            for s in 0..steps {
+                let u = 1.0 - ((s as f64 + 0.5) / (steps as f64));
+                let [r, g, b] = self.palette.map_unit_rgb(u);
+                let y0 = bar_rect.top() + (s as f32) * step_h;
+                let cell = Rect::from_min_max(
+                    Pos2::new(bar_rect.left(), y0),
+                    Pos2::new(bar_rect.right(), y0 + step_h + 0.5),
+                );
+                painter.rect_filled(cell, 0.0, Color32::from_rgb(r, g, b));
+            }
+            painter.rect_stroke(bar_rect, 0.0, Stroke::new(1.0_f32, tick_col));
+            painter.text(
+                Pos2::new(bar_rect.center().x, bar_rect.top() - 5.0),
+                egui::Align2::CENTER_BOTTOM,
+                "dBFS",
+                egui::FontId::monospace(10.0),
+                tick_col,
+            );
+            let floor_db = self.spectrogram.floor_dbfs;
+            for (frac, db_val) in [(0.0_f32, 0.0_f64), (0.5, 0.5 * floor_db), (1.0, floor_db)] {
+                let py = bar_rect.top() + frac * bar_rect.height();
+                painter.line_segment(
+                    [Pos2::new(bar_rect.right(), py), Pos2::new(bar_rect.right() + 3.0, py)],
+                    Stroke::new(1.0_f32, tick_col),
+                );
+                painter.text(
+                    Pos2::new(bar_rect.right() + 5.0, py),
+                    egui::Align2::LEFT_CENTER,
+                    format!("{db_val:.0}"),
+                    egui::FontId::monospace(10.0),
+                    lbl_col,
+                );
+            }
+
+            let map_x = |t: f64| {
+                spec_rect.left() + ((t / dur).clamp(0.0, 1.0) as f32) * spec_rect.width()
             };
-            let unmap_t = |px: f32| (((px - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0) as f64) * dur;
+            let map_y = |f: f64| {
+                spec_rect.bottom()
+                    - (((f - f_min) / f_span).clamp(0.0, 1.0) as f32) * spec_rect.height()
+            };
+            let unmap_t = |px: f32| {
+                (((px - spec_rect.left()) / spec_rect.width().max(1.0)).clamp(0.0, 1.0) as f64)
+                    * dur
+            };
             let unmap_f = |py: f32| {
-                f_min + (((rect.bottom() - py) / rect.height().max(1.0)).clamp(0.0, 1.0) as f64) * f_span
+                f_min
+                    + (((spec_rect.bottom() - py) / spec_rect.height().max(1.0)).clamp(0.0, 1.0)
+                        as f64)
+                        * f_span
             };
 
+            let spec_painter = painter.with_clip_rect(spec_rect);
             for f_band in [self.slicer_cfg.low_freq_hz, self.slicer_cfg.high_freq_hz] {
                 if f_band >= f_min && f_band <= f_max {
                     let y = map_y(f_band);
-                    painter.line_segment(
-                        [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
+                    spec_painter.line_segment(
+                        [Pos2::new(spec_rect.left(), y), Pos2::new(spec_rect.right(), y)],
                         Stroke::new(1.3_f32, Color32::from_rgba_unmultiplied(56, 189, 248, 200)),
                     );
                 }
@@ -662,9 +809,16 @@ impl EcosoundStudioApp {
                 } else {
                     Color32::from_rgb(34, 211, 238)
                 };
-                painter.rect_stroke(b_rect, 2.0, Stroke::new(if is_sel { 2.4 } else { 1.6_f32 }, stroke_col));
-                painter.text(
-                    Pos2::new(b_rect.left() + 3.0, (b_rect.top() - 13.0).max(rect.top() + 2.0)),
+                spec_painter.rect_stroke(
+                    b_rect,
+                    2.0,
+                    Stroke::new(if is_sel { 2.4 } else { 1.6_f32 }, stroke_col),
+                );
+                spec_painter.text(
+                    Pos2::new(
+                        b_rect.left() + 3.0,
+                        (b_rect.top() - 13.0).max(spec_rect.top() + 2.0),
+                    ),
                     egui::Align2::LEFT_TOP,
                     format!("#{} {:.1}kHz", ev.selection_id, ev.peak_freq_hz / 1000.0),
                     egui::FontId::monospace(11.0),
@@ -690,16 +844,25 @@ impl EcosoundStudioApp {
             if let Some(del_i) = right_clicked_delete {
                 self.events.remove(del_i);
                 self.renumber_selections();
-                self.selected_event_idx = None;
+                self.selected_event_idx = if self.events.is_empty() {
+                    None
+                } else {
+                    Some(del_i.min(self.events.len() - 1))
+                };
             }
 
             if resp.drag_started() {
-                self.drag_start_pos = resp.interact_pointer_pos();
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    if spec_rect.contains(pos) {
+                        self.drag_start_pos = Some(pos);
+                    }
+                }
             }
             if let (Some(p0), Some(p1)) = (self.drag_start_pos, resp.interact_pointer_pos()) {
                 if resp.dragged() {
-                    let preview = Rect::from_two_pos(p0, p1);
-                    painter.rect_stroke(
+                    let clamped_p1 = spec_rect.clamp(p1);
+                    let preview = Rect::from_two_pos(p0, clamped_p1);
+                    spec_painter.rect_stroke(
                         preview,
                         2.0,
                         Stroke::new(2.0_f32, Color32::from_rgb(74, 222, 128)),
@@ -709,9 +872,10 @@ impl EcosoundStudioApp {
             if resp.drag_stopped() {
                 if let (Some(p0), Some(p1)) = (self.drag_start_pos.take(), resp.interact_pointer_pos())
                 {
-                    if (p1.x - p0.x).abs() > 6.0 && (p1.y - p0.y).abs() > 6.0 {
+                    let c1 = spec_rect.clamp(p1);
+                    if (c1.x - p0.x).abs() > 6.0 && (c1.y - p0.y).abs() > 6.0 {
                         let new_ev =
-                            self.measure_manual_box(unmap_t(p0.x), unmap_t(p1.x), unmap_f(p0.y), unmap_f(p1.y));
+                            self.measure_manual_box(unmap_t(p0.x), unmap_t(c1.x), unmap_f(p0.y), unmap_f(c1.y));
                         self.events.push(new_ev);
                         self.selected_event_idx = Some(self.events.len() - 1);
                     }
@@ -719,11 +883,11 @@ impl EcosoundStudioApp {
             }
 
             if let Some(hover) = resp.hover_pos() {
-                if !self.status_is_error {
+                if spec_rect.contains(hover) && !self.status_is_error {
                     let ht = unmap_t(hover.x);
                     let hf = unmap_f(hover.y);
                     self.status_bar = format!(
-                        "Cursor: t = {ht:.3} s | f = {hf:.0} Hz | Selections: {} (Drag to add box, right-click box to remove)",
+                        "Cursor: t = {ht:.3} s | f = {hf:.0} Hz | Selections: {} (Drag to add box, Delete/Backspace or right-click to remove)",
                         self.events.len()
                     );
                 }
@@ -773,5 +937,69 @@ impl EcosoundStudioApp {
                     });
             });
         });
+
+        if !wants_kb_start
+            && !ctx.wants_keyboard_input()
+            && ctx.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+        {
+            if let Some(sel_idx) = self.selected_event_idx {
+                if sel_idx < self.events.len() {
+                    self.events.remove(sel_idx);
+                    self.renumber_selections();
+                    self.selected_event_idx = if self.events.is_empty() {
+                        None
+                    } else {
+                        Some(sel_idx.min(self.events.len() - 1))
+                    };
+                    if !self.status_is_error {
+                        self.status_bar = format!(
+                            "Removed selection #{} ({} remaining).",
+                            sel_idx + 1,
+                            self.events.len()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_and_backspace_remove_selected_event_when_not_typing() {
+        let ctx = egui::Context::default();
+        let mut app = EcosoundStudioApp::new(None);
+        let initial_len = app.events.len();
+        assert!(initial_len >= 3);
+        app.selected_event_idx = Some(1);
+
+        let press_key = |ctx: &egui::Context, app: &mut EcosoundStudioApp, key: Option<egui::Key>| {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0)));
+            if let Some(k) = key {
+                raw.events.push(egui::Event::Key {
+                    key: k,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            ctx.run(raw, |c| app.draw_panels(c))
+        };
+
+        let out0 = press_key(&ctx, &mut app, None);
+        assert!(!out0.shapes.is_empty());
+
+        press_key(&ctx, &mut app, Some(egui::Key::Delete));
+        assert_eq!(app.events.len(), initial_len - 1);
+        assert_eq!(app.events[0].selection_id, 1);
+        assert_eq!(app.events[1].selection_id, 2);
+
+        press_key(&ctx, &mut app, Some(egui::Key::Backspace));
+        assert_eq!(app.events.len(), initial_len - 2);
     }
 }

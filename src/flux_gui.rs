@@ -35,8 +35,8 @@ use crate::flux_leaf::{
     LeafAciPoint,
 };
 use crate::flux_stream::{
-    demo_stream_diel_do_csv, fit_odum_stream_metabolism, parse_stream_do_csv, render_flux_svg,
-    StreamDoPoint, StreamMetabolismReport,
+    compute_do_y_bounds, demo_stream_diel_do_csv, fit_odum_stream_metabolism, parse_stream_do_csv,
+    render_flux_svg, StreamDoPoint, StreamMetabolismReport,
 };
 use crate::kinetics_core::{
     demo_competitive_kinase_matrix_csv, demo_morrison_tight_binding_csv, eval_inhibition_velocity,
@@ -456,13 +456,23 @@ impl FluxGuiApp {
             egui::Color32::from_rgb(15, 23, 42),
         );
 
+        let ppfd_ref = if self.aci_pts.is_empty() {
+            1500.0
+        } else {
+            self.aci_pts.iter().map(|p| p.ppfd).sum::<f64>() / (self.aci_pts.len() as f64)
+        };
+        let t_leaf_ref = if self.aci_pts.is_empty() {
+            25.0
+        } else {
+            self.aci_pts.iter().map(|p| p.t_leaf_c).sum::<f64>() / (self.aci_pts.len() as f64)
+        };
         let mut curve_pts = Vec::with_capacity(60);
         for k in 1..=60 {
             let ci = 45.0 + ((k as f64) / 60.0) * (max_ci - 45.0);
             let (a_val, _) = eval_fvcb_assimilation(
                 ci,
-                1500.0,
-                25.0,
+                ppfd_ref,
+                t_leaf_ref,
                 self.aci_fit.vcmax,
                 self.aci_fit.jmax,
                 self.aci_fit.tpu,
@@ -520,16 +530,18 @@ impl FluxGuiApp {
         let rect = outer.shrink2(egui::vec2(48.0, 32.0));
 
         let max_hr = self.stream_pts.last().map(|p| p.hour).unwrap_or(24.0).max(1.0);
+        let (min_do, max_do) = compute_do_y_bounds(&self.stream_pts, &self.stream_rep);
+        let do_span = (max_do - min_do).max(1e-6);
         let map_pt = |h: f64, do_v: f64| -> egui::Pos2 {
             let fx = (h / max_hr).clamp(0.0, 1.0) as f32;
-            let fy = ((do_v - 6.0) / 7.0).clamp(0.0, 1.0) as f32;
+            let fy = ((do_v - min_do) / do_span).clamp(0.0, 1.0) as f32;
             egui::pos2(rect.left() + fx * rect.width(), rect.bottom() - fy * rect.height())
         };
 
         let grid_stroke = egui::Stroke::new(0.8_f32, egui::Color32::from_rgb(226, 232, 240));
         let axis_color = egui::Color32::from_rgb(71, 85, 105);
         for hr in [0.0, 6.0, 12.0, 18.0, 24.0] {
-            let p = map_pt(hr, 6.0);
+            let p = map_pt(hr, min_do);
             painter.line_segment([egui::pos2(p.x, rect.top()), egui::pos2(p.x, rect.bottom())], grid_stroke);
             painter.text(
                 egui::pos2(p.x, rect.bottom() + 6.0),
@@ -539,13 +551,14 @@ impl FluxGuiApp {
                 axis_color,
             );
         }
-        for do_tick in [7.0, 8.0, 9.0, 10.0, 11.0, 12.0] {
+        for k in 0..=4 {
+            let do_tick = min_do + (k as f64 / 4.0) * do_span;
             let p = map_pt(0.0, do_tick);
             painter.line_segment([egui::pos2(rect.left(), p.y), egui::pos2(rect.right(), p.y)], grid_stroke);
             painter.text(
                 egui::pos2(rect.left() - 6.0, p.y),
                 egui::Align2::RIGHT_CENTER,
-                format!("{do_tick:.0}"),
+                format!("{do_tick:.1}"),
                 egui::FontId::proportional(11.0),
                 axis_color,
             );
@@ -626,66 +639,9 @@ impl FluxGuiApp {
 
     fn draw_stream_panel(&self, ui: &mut egui::Ui) {
         ui.columns(2, |cols| {
-            let (resp, painter) = cols[0].allocate_painter(
-                egui::vec2(cols[0].available_width().max(480.0), 520.0),
-                egui::Sense::hover(),
-            );
-            let rect = resp.rect;
-            painter.rect_filled(rect, 6.0, egui::Color32::from_rgb(248, 250, 252));
-
-            let max_hr = self.stream_pts.last().map(|p| p.hour).unwrap_or(24.0).max(1.0);
-            let map_pt = |h: f64, do_v: f64| -> egui::Pos2 {
-                let fx = (h / max_hr).clamp(0.0, 1.0) as f32;
-                let fy = ((do_v - 6.0) / 7.0).clamp(0.0, 1.0) as f32;
-                egui::pos2(rect.left() + fx * rect.width(), rect.bottom() - fy * rect.height())
-            };
-
-            let mod_line: Vec<egui::Pos2> = self
-                .stream_pts
-                .iter()
-                .zip(&self.stream_rep.modeled_do_mg_l)
-                .map(|(p, &m)| map_pt(p.hour, m))
-                .collect();
-            let sat_line: Vec<egui::Pos2> = self
-                .stream_pts
-                .iter()
-                .zip(&self.stream_rep.do_sat_mg_l)
-                .map(|(p, &s)| map_pt(p.hour, s))
-                .collect();
-            painter.add(egui::Shape::line(
-                sat_line,
-                egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 116, 139)),
-            ));
-            painter.add(egui::Shape::line(
-                mod_line,
-                egui::Stroke::new(2.4_f32, egui::Color32::from_rgb(37, 99, 235)),
-            ));
-            for p in &self.stream_pts {
-                painter.circle_filled(
-                    map_pt(p.hour, p.do_mg_l),
-                    3.8,
-                    egui::Color32::from_rgb(220, 38, 38),
-                );
-            }
-
-            cols[1].heading("Odum (1956) Open-Channel Stream Metabolism");
-            cols[1].separator();
-            cols[1].label(format!(
-                "GPP  : {:.3} g O2 m^-2 d^-1",
-                self.stream_rep.gpp_g_o2_m2_d
-            ));
-            cols[1].label(format!(
-                "ER   : {:.3} g O2 m^-2 d^-1",
-                self.stream_rep.er_g_o2_m2_d
-            ));
-            cols[1].label(format!(
-                "NEP  : {:+.3} g O2 m^-2 d^-1",
-                self.stream_rep.nep_g_o2_m2_d
-            ));
-            cols[1].label(format!("P/R  : {:.3}", self.stream_rep.p_to_r_ratio));
-            cols[1].label(format!("K600 : {:.2} d^-1", self.stream_rep.k600_per_day));
-            cols[1].label(format!("State: {}", self.stream_rep.trophic_state));
-            cols[1].label(format!("RMSE : {:.4} mg/L", self.stream_rep.do_rmse_mg_l));
+            let w = cols[0].available_width().max(480.0);
+            self.draw_stream_plot(&mut cols[0], w, 520.0);
+            self.draw_stream_params(&mut cols[1]);
         });
     }
 

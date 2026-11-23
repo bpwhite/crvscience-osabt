@@ -272,16 +272,26 @@ pub fn fit_single_substrate_models(
     let uninh: Vec<KineticsPoint> = points
         .iter()
         .copied()
-        .filter(|p| p.inhibitor_nm.abs() <= 1e-9 && p.substrate_um >= 0.0 && p.velocity.is_finite())
+        .filter(|p| {
+            p.inhibitor_nm.is_finite()
+                && p.inhibitor_nm.abs() <= 1e-9
+                && p.substrate_um.is_finite()
+                && p.substrate_um >= 0.0
+                && p.velocity.is_finite()
+        })
         .collect();
     let data = if uninh.len() >= 5 {
         uninh
     } else {
-        points.to_vec()
+        points
+            .iter()
+            .copied()
+            .filter(|p| p.substrate_um.is_finite() && p.substrate_um >= 0.0 && p.velocity.is_finite())
+            .collect()
     };
     if data.len() < 5 {
         return Err(String::from(
-            "Single-substrate model comparison requires >= 5 velocity points.",
+            "Single-substrate model comparison requires >= 5 finite velocity points.",
         ));
     }
 
@@ -293,12 +303,7 @@ pub fn fit_single_substrate_models(
     let half_v = 0.5 * vmax_init;
     let km_init = data
         .iter()
-        .min_by(|a, b| {
-            (a.velocity - half_v)
-                .abs()
-                .partial_cmp(&(b.velocity - half_v).abs())
-                .unwrap()
-        })
+        .min_by(|a, b| (a.velocity - half_v).abs().total_cmp(&(b.velocity - half_v).abs()))
         .map(|p| p.substrate_um.max(1.0))
         .unwrap_or(25.0);
     let max_s = data
@@ -458,7 +463,7 @@ pub fn fit_single_substrate_models(
         ),
     ];
 
-    fits.sort_by(|a, b| a.aicc.partial_cmp(&b.aicc).unwrap());
+    fits.sort_by(|a, b| a.aicc.total_cmp(&b.aicc));
     let min_aicc = fits[0].aicc;
     let w_sum: f64 = fits
         .iter()
@@ -562,7 +567,7 @@ pub fn fit_global_reversible_inhibition(
     // Seed Mixed-Type from best 3-parameter mechanism so global minimum is guaranteed
     let best_3p = fits
         .iter()
-        .min_by(|a, b| a.sse.partial_cmp(&b.sse).unwrap())
+        .min_by(|a, b| a.sse.total_cmp(&b.sse))
         .unwrap();
     let init_alpha = match best_3p.mechanism {
         InhibitionMechanism::Competitive => 20.0_f64,
@@ -632,7 +637,7 @@ pub fn fit_global_reversible_inhibition(
         akaike_weight: 0.0,
     });
 
-    fits.sort_by(|a, b| a.aicc.partial_cmp(&b.aicc).unwrap());
+    fits.sort_by(|a, b| a.aicc.total_cmp(&b.aicc));
     let best_aicc = fits[0].aicc;
     let w_sum: f64 = fits
         .iter()
@@ -686,7 +691,7 @@ pub fn fit_morrison_tight_binding(
     let half_v = 0.5 * v0_init;
     let ic50_approx = observations
         .iter()
-        .min_by(|a, b| (a.1 - half_v).abs().partial_cmp(&(b.1 - half_v).abs()).unwrap())
+        .min_by(|a, b| (a.1 - half_v).abs().total_cmp(&(b.1 - half_v).abs()))
         .map(|p| p.0.max(0.5))
         .unwrap_or(10.0);
 
@@ -849,7 +854,7 @@ fn median_positive(mut vals: Vec<f64>) -> f64 {
     if vals.is_empty() {
         return 10.0;
     }
-    vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    vals.sort_by(|a, b| a.total_cmp(b));
     vals[vals.len() / 2]
 }
 
@@ -992,5 +997,33 @@ mod tests {
         assert!((fit.ki_app_nm - 1.35).abs() < 0.25);
         assert!((fit.intrinsic_ki_nm.unwrap() - 0.45).abs() < 0.10);
         assert!(fit.r_squared > 0.999);
+    }
+
+    #[test]
+    fn single_substrate_fit_filters_nan_and_inf_in_fallback_branch() {
+        // Fewer than 5 uninhibited points forces fallback to `points` slice,
+        // where NaN and Inf velocities must be filtered rather than panicking in sorting.
+        let pts = vec![
+            KineticsPoint { substrate_um: 5.0, inhibitor_nm: 15.0, velocity: 9.4 },
+            KineticsPoint { substrate_um: 10.0, inhibitor_nm: 15.0, velocity: 17.4 },
+            KineticsPoint { substrate_um: 25.0, inhibitor_nm: 15.0, velocity: 35.7 },
+            KineticsPoint { substrate_um: 50.0, inhibitor_nm: 15.0, velocity: 55.2 },
+            KineticsPoint { substrate_um: 100.0, inhibitor_nm: 15.0, velocity: 75.5 },
+            KineticsPoint { substrate_um: 250.0, inhibitor_nm: 15.0, velocity: 97.1 },
+            KineticsPoint { substrate_um: 75.0, inhibitor_nm: 15.0, velocity: f64::NAN },
+            KineticsPoint { substrate_um: 150.0, inhibitor_nm: 15.0, velocity: f64::INFINITY },
+        ];
+        let fits = fit_single_substrate_models(&pts, None).expect("NaN/Inf filtered safely");
+        assert_eq!(fits.len(), 3);
+        assert!(fits.iter().all(|f| f.vmax.is_finite() && f.aicc.is_finite()));
+
+        let too_few = vec![
+            KineticsPoint { substrate_um: 5.0, inhibitor_nm: 15.0, velocity: 9.4 },
+            KineticsPoint { substrate_um: 10.0, inhibitor_nm: 15.0, velocity: f64::NAN },
+            KineticsPoint { substrate_um: 25.0, inhibitor_nm: 15.0, velocity: f64::NAN },
+            KineticsPoint { substrate_um: 50.0, inhibitor_nm: 15.0, velocity: 55.2 },
+            KineticsPoint { substrate_um: 100.0, inhibitor_nm: 15.0, velocity: f64::INFINITY },
+        ];
+        assert!(fit_single_substrate_models(&too_few, None).is_err());
     }
 }

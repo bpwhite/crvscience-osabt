@@ -349,6 +349,8 @@ pub struct OsabtWorkbenchApp {
     visuals_applied: bool,
     init_error: Option<String>,
     about_open: bool,
+    focus_search: bool,
+    prev_wants_kb: bool,
 }
 
 impl Default for OsabtWorkbenchApp {
@@ -387,12 +389,54 @@ impl OsabtWorkbenchApp {
             visuals_applied: false,
             init_error: None,
             about_open: false,
+            focus_search: false,
+            prev_wants_kb: false,
         }
     }
 
     pub fn select_tool(&mut self, tool: ToolId) {
         self.active_tool = Some(tool);
         self.init_error = None;
+    }
+
+    pub fn active_tool(&self) -> Option<ToolId> {
+        self.active_tool
+    }
+
+    pub fn is_rail_open(&self) -> bool {
+        self.rail_open
+    }
+
+    pub fn is_about_open(&self) -> bool {
+        self.about_open
+    }
+
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    pub fn set_search_query(&mut self, query: impl Into<String>) {
+        self.search_query = query.into();
+    }
+
+    fn ctrl_key_pressed(ctx: &egui::Context, target: egui::Key) -> bool {
+        ctx.input(|i| {
+            let state_ctrl = (i.modifiers.command || i.modifiers.ctrl) && !i.modifiers.alt;
+            if state_ctrl && i.key_pressed(target) {
+                return true;
+            }
+            i.events.iter().any(|ev| {
+                matches!(
+                    ev,
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if *key == target && (modifiers.command || modifiers.ctrl) && !modifiers.alt
+                )
+            })
+        })
     }
 
     fn apply_dark_slate_theme(ctx: &egui::Context) {
@@ -439,12 +483,20 @@ impl OsabtWorkbenchApp {
                 } else {
                     Color32::from_rgb(30, 41, 59)
                 });
-                if ui.add(launcher_btn).clicked() {
+                if ui
+                    .add(launcher_btn)
+                    .on_hover_text("Return to Suite Home Launcher (Esc)")
+                    .clicked()
+                {
                     self.active_tool = None;
                 }
 
                 let rail_lbl = if self.rail_open { "<< Hide Rail" } else { ">> Show Rail" };
-                if ui.button(rail_lbl).clicked() {
+                if ui
+                    .button(rail_lbl)
+                    .on_hover_text("Toggle tool navigation rail (Ctrl+B)")
+                    .clicked()
+                {
                     self.rail_open = !self.rail_open;
                 }
 
@@ -468,11 +520,15 @@ impl OsabtWorkbenchApp {
                 }
 
                 ui.separator();
-                ui.add(
+                let search_resp = ui.add(
                     egui::TextEdit::singleline(&mut self.search_query)
-                        .hint_text("Search 20 tools...")
-                        .desired_width(135.0),
+                        .hint_text("Search 20 tools... (Ctrl+F)")
+                        .desired_width(145.0),
                 );
+                if self.focus_search {
+                    search_resp.request_focus();
+                    self.focus_search = false;
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let pill_txt = match self.active_tool {
@@ -489,7 +545,11 @@ impl OsabtWorkbenchApp {
                         .show(ui, |ui| {
                             ui.label(RichText::new(pill_txt).small().strong().color(Color32::WHITE));
                         });
-                    if ui.button("About").clicked() {
+                    if ui
+                        .button("About")
+                        .on_hover_text("About & Keyboard Shortcuts (F1)")
+                        .clicked()
+                    {
                         self.about_open = !self.about_open;
                     }
                     ui.label(
@@ -571,6 +631,7 @@ impl OsabtWorkbenchApp {
                 );
                 ui.add_space(10.0);
 
+                let mut total_matches = 0usize;
                 for dom in ToolDomain::ALL {
                     let matching: Vec<&ToolMeta> = TOOL_CATALOG
                         .iter()
@@ -579,6 +640,7 @@ impl OsabtWorkbenchApp {
                     if matching.is_empty() {
                         continue;
                     }
+                    total_matches += matching.len();
 
                     ui.horizontal(|ui| {
                         ui.colored_label(dom.accent(), RichText::new(format!("■ {}", dom.label())).size(15.5).strong());
@@ -656,6 +718,44 @@ impl OsabtWorkbenchApp {
                     }
                     ui.add_space(6.0);
                 }
+
+                if total_matches == 0 {
+                    ui.add_space(24.0);
+                    egui::Frame::none()
+                        .fill(Color32::from_rgb(24, 34, 54))
+                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(51, 65, 85)))
+                        .rounding(8.0)
+                        .inner_margin(Margin::same(20.0))
+                        .show(ui, |card| {
+                            card.heading(
+                                RichText::new("No matching tools")
+                                    .strong()
+                                    .color(Color32::from_rgb(241, 245, 249)),
+                            );
+                            card.add_space(4.0);
+                            card.label(
+                                RichText::new(
+                                    "No tools matched the current search query or domain filter.",
+                                )
+                                .color(Color32::from_rgb(148, 163, 184)),
+                            );
+                            card.add_space(10.0);
+                            if card
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Reset Filter")
+                                            .strong()
+                                            .color(Color32::WHITE),
+                                    )
+                                    .fill(Color32::from_rgb(37, 99, 235)),
+                                )
+                                .clicked()
+                            {
+                                self.search_query.clear();
+                                self.domain_filter = None;
+                            }
+                        });
+                }
             });
         });
     }
@@ -720,6 +820,15 @@ impl OsabtWorkbenchApp {
             Self::apply_dark_slate_theme(ctx);
             self.visuals_applied = true;
         }
+        let wants_kb = ctx.wants_keyboard_input();
+        if !wants_kb {
+            if Self::ctrl_key_pressed(ctx, egui::Key::B) {
+                self.rail_open = !self.rail_open;
+            }
+            if Self::ctrl_key_pressed(ctx, egui::Key::F) {
+                self.focus_search = true;
+            }
+        }
         self.draw_suite_header(ctx);
         self.draw_suite_rail(ctx);
         if let Some(tool) = self.active_tool {
@@ -727,7 +836,17 @@ impl OsabtWorkbenchApp {
         } else {
             self.draw_home_launcher(ctx);
         }
+        let about_was_open = self.about_open;
         crate::brand::draw_about_window(ctx, &mut self.about_open);
+        if !wants_kb
+            && !self.prev_wants_kb
+            && !about_was_open
+            && self.active_tool.is_some()
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            self.active_tool = None;
+        }
+        self.prev_wants_kb = ctx.wants_keyboard_input();
     }
 }
 
@@ -782,4 +901,84 @@ pub fn run_workbench_screenshot(out_path: &Path, view_idx: u8) -> Result<(), Str
     }
     let ctx = egui::Context::default();
     render_flux_offscreen_png(&ctx, out_path, |c| app.draw_panels(c))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_key_frame(
+        ctx: &egui::Context,
+        app: &mut OsabtWorkbenchApp,
+        key: Option<egui::Key>,
+        modifiers: egui::Modifiers,
+    ) -> egui::FullOutput {
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        ));
+        raw.modifiers = modifiers;
+        if let Some(k) = key {
+            raw.events.push(egui::Event::Key {
+                key: k,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            });
+        }
+        ctx.run(raw, |c| app.draw_panels(c))
+    }
+
+    #[test]
+    fn global_hotkeys_respect_text_focus_and_empty_filter_reset() {
+        let ctx = egui::Context::default();
+        let mut app = OsabtWorkbenchApp::new();
+        run_key_frame(&ctx, &mut app, None, egui::Modifiers::NONE);
+
+        // Ctrl+B toggles navigation rail
+        assert!(app.is_rail_open());
+        run_key_frame(&ctx, &mut app, Some(egui::Key::B), egui::Modifiers::CTRL);
+        assert!(!app.is_rail_open());
+        run_key_frame(&ctx, &mut app, Some(egui::Key::B), egui::Modifiers::CTRL);
+        assert!(app.is_rail_open());
+
+        // Select a tool, toggle About with F1, first Esc closes About without leaving tool, second Esc returns Home
+        app.select_tool(ToolId::Flux);
+        run_key_frame(&ctx, &mut app, None, egui::Modifiers::NONE);
+        run_key_frame(&ctx, &mut app, Some(egui::Key::F1), egui::Modifiers::NONE);
+        assert!(app.is_about_open());
+        assert_eq!(app.active_tool(), Some(ToolId::Flux));
+
+        run_key_frame(&ctx, &mut app, Some(egui::Key::Escape), egui::Modifiers::NONE);
+        assert!(!app.is_about_open());
+        assert_eq!(app.active_tool(), Some(ToolId::Flux));
+
+        run_key_frame(&ctx, &mut app, Some(egui::Key::Escape), egui::Modifiers::NONE);
+        assert_eq!(app.active_tool(), None);
+
+        // Ctrl+F focuses search box; while search box has focus, F1 / Ctrl+B / Esc do not hijack text widget
+        app.select_tool(ToolId::Flux);
+        run_key_frame(&ctx, &mut app, Some(egui::Key::F), egui::Modifiers::CTRL);
+        run_key_frame(&ctx, &mut app, None, egui::Modifiers::NONE);
+        assert!(ctx.wants_keyboard_input(), "Ctrl+F should focus search TextEdit");
+
+        run_key_frame(&ctx, &mut app, Some(egui::Key::B), egui::Modifiers::CTRL);
+        assert!(app.is_rail_open(), "Ctrl+B must not fire while TextEdit has focus");
+
+        run_key_frame(&ctx, &mut app, Some(egui::Key::F1), egui::Modifiers::NONE);
+        assert!(!app.is_about_open(), "F1 must not fire while TextEdit has focus");
+
+        // Escape surrenders TextEdit focus without kicking out of the active tool on the same frame
+        run_key_frame(&ctx, &mut app, Some(egui::Key::Escape), egui::Modifiers::NONE);
+        assert_eq!(app.active_tool(), Some(ToolId::Flux));
+
+        // Filter mismatch renders empty state and matches zero tools
+        app.set_search_query("zzznomatch999");
+        let _ = run_key_frame(&ctx, &mut app, Some(egui::Key::Escape), egui::Modifiers::NONE);
+        assert_eq!(app.active_tool(), None);
+        let out = run_key_frame(&ctx, &mut app, None, egui::Modifiers::NONE);
+        assert!(!out.shapes.is_empty());
+    }
 }

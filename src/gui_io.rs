@@ -155,7 +155,7 @@ pub fn show_paste_modal(
     if !modal.open {
         return None;
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
         modal.open = false;
         return None;
     }

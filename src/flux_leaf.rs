@@ -19,8 +19,9 @@
 
 //! Tool #20 (`osabt flux`) — C3 Leaf `FvCB` Photosynthesis $A\text{–}C_i$ Curve Fitter:
 //! - **Farquhar, von Caemmerer & Berry (1980)** *Planta* 149:78–90 (`https://pmc.ncbi.nlm.nih.gov/articles/PMC12500802/`)
-//! - Uses the original minimum-carboxylation-rate formulation `Vc = min(Wc, Wj, Wp)` with
-//!   Bernacchi et al. (2001) Arrhenius temperature scaling for `Kc`, `Ko`, and `Gamma*`.
+//! - Uses the minimum-carboxylation-rate formulation `Vc = min(Wc, Wj, Wp)` with
+//!   Bernacchi et al. (2001, 2003) / Medlyn et al. (2002) / Harley et al. (1992) peaked Arrhenius
+//!   temperature scaling (`Ha`, `Hd`, `dS`) and `(1 - f)` (`f = 0.15`) PSII spectral correction.
 
 use crate::wildlife_occupancy::nelder_mead_minimize;
 
@@ -104,7 +105,7 @@ pub fn parse_aci_csv(raw_csv: &str) -> Result<Vec<LeafAciPoint>, String> {
             .map_err(|_| format!("A-Ci line {}: invalid A_net '{}'.", idx + 1, cols[1]))?;
         let ppfd = cols.get(2).and_then(|s| s.parse::<f64>().ok()).unwrap_or(1500.0);
         let t_leaf = cols.get(3).and_then(|s| s.parse::<f64>().ok()).unwrap_or(25.0);
-        if ci > 0.0 && an.is_finite() {
+        if ci.is_finite() && ci > 0.0 && an.is_finite() && ppfd.is_finite() && t_leaf.is_finite() {
             pts.push(LeafAciPoint {
                 ci_ubar: ci,
                 a_net: an,
@@ -116,8 +117,97 @@ pub fn parse_aci_csv(raw_csv: &str) -> Result<Vec<LeafAciPoint>, String> {
     if pts.len() < 5 {
         return Err(String::from("FvCB A-Ci fitting requires at least 5 measurement points."));
     }
-    pts.sort_by(|a, b| a.ci_ubar.partial_cmp(&b.ci_ubar).unwrap());
+    pts.sort_by(|a, b| a.ci_ubar.total_cmp(&b.ci_ubar));
     Ok(pts)
+}
+
+/// Evaluates the Farquhar, von Caemmerer & Berry (1980) individual biochemical limitation rates
+/// `(a_wc, a_wj, a_wp, a_net, limiting_state)` at `(ci_ubar, ppfd, t_leaf_c)`.
+///
+/// Uses Bernacchi et al. (2001, 2003), Medlyn et al. (2002), and Harley et al. (1992)
+/// peaked Arrhenius temperature scaling (`Hd`, `dS`) for `Vcmax`, `Jmax`, and `TPU`, and
+/// applies the von Caemmerer (2000) `(1 - f)` (`f = 0.15`) spectral-quality correction to `I_abs`.
+pub fn eval_fvcb_regime_rates(
+    ci_ubar: f64,
+    ppfd: f64,
+    t_leaf_c: f64,
+    vcmax25: f64,
+    jmax25: f64,
+    tpu25: f64,
+    rd25: f64,
+) -> (f64, f64, f64, f64, FvcbLimitationState) {
+    if !ci_ubar.is_finite()
+        || !ppfd.is_finite()
+        || !t_leaf_c.is_finite()
+        || t_leaf_c <= -273.15
+        || !vcmax25.is_finite()
+        || !jmax25.is_finite()
+        || !tpu25.is_finite()
+        || !rd25.is_finite()
+    {
+        return (0.0, 0.0, f64::INFINITY, 0.0, FvcbLimitationState::RubiscoWc);
+    }
+
+    let tk = (t_leaf_c + 273.15).max(1.0);
+    let r_gas = 0.008_314_5_f64; // kJ / (mol K)
+    let arrh = |val25: f64, ha_kj: f64| -> f64 {
+        val25 * (ha_kj * (tk - 298.15) / (298.15 * r_gas * tk)).exp()
+    };
+    let peaked_arrh = |val25: f64, ha_kj: f64, hd_kj: f64, ds_kj_k: f64| -> f64 {
+        let num = 1.0 + ((298.15 * ds_kj_k - hd_kj) / (298.15 * r_gas)).exp();
+        let den = 1.0 + ((tk * ds_kj_k - hd_kj) / (tk * r_gas)).exp();
+        arrh(val25, ha_kj) * (num / den.max(1e-30))
+    };
+
+    // Bernacchi et al. (2001) Rubisco kinetics (`25 °C` baseline: Kc=404.9 ubar, Ko=278.4 mbar, Gamma*=42.75 ubar)
+    let kc = arrh(404.9, 79.43);
+    let ko = arrh(278.4, 36.38).max(1e-30); // mbar
+    let gamma_star = arrh(42.75, 37.83);
+    let o2_mbar = 210.0_f64;
+
+    // Bernacchi et al. (2003) / Medlyn et al. (2002) / Harley et al. (1992) peaked deactivation
+    let vcmax = peaked_arrh(vcmax25, 65.33, 200.0, 0.650);
+    let jmax = peaked_arrh(jmax25, 43.54, 200.0, 0.650);
+    let tpu = peaked_arrh(tpu25, 53.10, 201.8, 0.650);
+    let rd = arrh(rd25, 46.39);
+
+    // Non-rectangular hyperbola for chloroplast electron transport `J(PPFD, Jmax)`
+    // von Caemmerer (2000) / Bernacchi et al. (2003): I_abs = alpha * 0.5 * (1 - f) * PPFD, f = 0.15
+    let f_spec = 0.15_f64;
+    let i_abs = 0.85 * 0.5 * (1.0 - f_spec) * ppfd.max(0.0);
+    let theta_j = 0.70_f64;
+    let sum_ij = i_abs + jmax;
+    let disc = (sum_ij * sum_ij - 4.0 * theta_j * i_abs * jmax).max(0.0);
+    let j_rate = (sum_ij - disc.sqrt()) / (2.0 * theta_j);
+
+    let ci_safe = ci_ubar.max(1e-6);
+    let km_app = kc * (1.0 + o2_mbar / ko);
+    let wc = (vcmax * ci_safe) / (ci_safe + km_app).max(1e-12);
+    let wj = (j_rate * ci_safe) / (4.0 * ci_safe + 8.0 * gamma_star).max(1e-12);
+    let wp = if ci_safe > gamma_star + 1.0 {
+        (3.0 * tpu * ci_safe) / (ci_safe - gamma_star)
+    } else {
+        f64::INFINITY
+    };
+
+    let factor = 1.0 - gamma_star / ci_safe;
+    let a_wc = wc * factor - rd;
+    let a_wj = wj * factor - rd;
+    let a_wp = if wp.is_finite() {
+        wp * factor - rd
+    } else {
+        f64::INFINITY
+    };
+
+    let (a_net, state) = if wc <= wj && wc <= wp {
+        (a_wc, FvcbLimitationState::RubiscoWc)
+    } else if wj <= wp {
+        (a_wj, FvcbLimitationState::RuBpRegenWj)
+    } else {
+        (a_wp, FvcbLimitationState::TriosePhosphateWp)
+    };
+
+    (a_wc, a_wj, a_wp, a_net, state)
 }
 
 /// Evaluates the Farquhar, von Caemmerer & Berry (1980) net assimilation rate `A_n`
@@ -131,48 +221,8 @@ pub fn eval_fvcb_assimilation(
     tpu25: f64,
     rd25: f64,
 ) -> (f64, FvcbLimitationState) {
-    let tk = t_leaf_c + 273.15;
-    let r_gas = 0.008_314_5_f64; // kJ / (mol K)
-    let arrh = |val25: f64, ha_kj: f64| -> f64 {
-        val25 * (ha_kj * (tk - 298.15) / (298.15 * r_gas * tk)).exp()
-    };
-
-    // Bernacchi et al. (2001) Rubisco kinetics (`25 °C` baseline: Kc=404.9 ubar, Ko=278.4 mbar, Gamma*=42.75 ubar)
-    let kc = arrh(404.9, 79.43);
-    let ko = arrh(278.4, 36.38); // mbar
-    let gamma_star = arrh(42.75, 37.83);
-    let o2_mbar = 210.0_f64;
-
-    let vcmax = arrh(vcmax25, 65.33);
-    let jmax = arrh(jmax25, 43.54);
-    let tpu = arrh(tpu25, 53.10);
-    let rd = arrh(rd25, 46.39);
-
-    // Non-rectangular hyperbola for chloroplast electron transport `J(PPFD, Jmax)`
-    let i_abs = 0.85 * 0.5 * ppfd; // Absorbed PAR partitioned to PSII
-    let theta_j = 0.70_f64;
-    let sum_ij = i_abs + jmax;
-    let disc = (sum_ij * sum_ij - 4.0 * theta_j * i_abs * jmax).max(0.0);
-    let j_rate = (sum_ij - disc.sqrt()) / (2.0 * theta_j);
-
-    let km_app = kc * (1.0 + o2_mbar / ko);
-    let wc = (vcmax * ci_ubar) / (ci_ubar + km_app);
-    let wj = (j_rate * ci_ubar) / (4.0 * ci_ubar + 8.0 * gamma_star);
-    let wp = if ci_ubar > gamma_star + 1.0 {
-        (3.0 * tpu * ci_ubar) / (ci_ubar - gamma_star)
-    } else {
-        f64::INFINITY
-    };
-
-    let (w_lim, state) = if wc <= wj && wc <= wp {
-        (wc, FvcbLimitationState::RubiscoWc)
-    } else if wj <= wp {
-        (wj, FvcbLimitationState::RuBpRegenWj)
-    } else {
-        (wp, FvcbLimitationState::TriosePhosphateWp)
-    };
-
-    let a_net = w_lim * (1.0 - gamma_star / ci_ubar.max(1e-6)) - rd;
+    let (_a_wc, _a_wj, _a_wp, a_net, state) =
+        eval_fvcb_regime_rates(ci_ubar, ppfd, t_leaf_c, vcmax25, jmax25, tpu25, rd25);
     (a_net, state)
 }
 
@@ -249,7 +299,7 @@ pub fn fit_fvcb_aci_curve(points: &[LeafAciPoint]) -> Result<FvcbAciFit, String>
 /// Built-in 12-point Pacific Northwest Douglas-fir (*Pseudotsuga menziesii*) $A\text{–}C_i$ curve
 /// (`25 °C`, `PPFD = 1500 umol m^-2 s^-1`, true `Vcmax = 86`, `Jmax = 152`, `TPU = 10.6`, `Rd = 1.15`).
 pub fn demo_fvcb_aci_csv() -> String {
-    let cis = [55.0, 90.0, 130.0, 180.0, 240.0, 320.0, 420.0, 580.0, 780.0, 1000.0, 1250.0, 1550.0];
+    let cis = [55.0, 90.0, 130.0, 180.0, 240.0, 320.0, 420.0, 580.0, 780.0, 1000.0, 1350.0, 1850.0];
     let mut out = String::from(
         "# Douglas-fir (Pseudotsuga menziesii) Leaf Gas-Exchange A-Ci Curve (25 C, PPFD=1500)\n\
          ci_ubar,a_net,ppfd,t_leaf_c\n",
@@ -279,5 +329,31 @@ mod tests {
             *fit.limiting_states.last().unwrap(),
             FvcbLimitationState::TriosePhosphateWp
         );
+    }
+
+    #[test]
+    fn high_temp_peaked_deactivation_and_subzero_kelvin_guards() {
+        let (a_25, _) = eval_fvcb_assimilation(400.0, 1500.0, 25.0, 86.0, 152.0, 10.6, 1.15);
+        let (a_45, _) = eval_fvcb_assimilation(400.0, 1500.0, 45.0, 86.0, 152.0, 10.6, 1.15);
+        assert!(a_25.is_finite() && a_25 > 10.0);
+        assert!(a_45.is_finite() && a_45 < a_25, "45 C ({a_45}) must deactivate below 25 C ({a_25})");
+
+        let (a_50, _) = eval_fvcb_assimilation(400.0, 1500.0, 50.0, 86.0, 152.0, 10.6, 1.15);
+        assert!(a_50.is_finite() && a_50 < a_45);
+
+        for t_extreme in [-273.15, -300.0, -250.0, f64::NAN] {
+            let (a_ext, _) =
+                eval_fvcb_assimilation(400.0, 1500.0, t_extreme, 86.0, 152.0, 10.6, 1.15);
+            assert!(
+                a_ext.is_finite(),
+                "eval_fvcb_assimilation must stay finite at {t_extreme} C"
+            );
+        }
+
+        // Verify (1 - f) with f = 0.15 reduces light-limited RuBP regeneration rate at sub-saturating PPFD
+        let (_wc, a_wj_low_ppfd, _wp, a_net_low_ppfd, st) =
+            eval_fvcb_regime_rates(400.0, 200.0, 25.0, 86.0, 152.0, 10.6, 1.15);
+        assert_eq!(st, FvcbLimitationState::RuBpRegenWj);
+        assert!(a_net_low_ppfd.is_finite() && (a_net_low_ppfd - a_wj_low_ppfd).abs() < 1e-12);
     }
 }
