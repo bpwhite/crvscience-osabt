@@ -16,6 +16,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 
+#![forbid(unsafe_code)]
+
 //! # Open Source Ad-hoc Biology Tools (`osabt` `v2.0.0`)
 //!
 //! Unified GPL-3.0 Rust library and application suite for the **CRV Science Network**
@@ -72,6 +74,7 @@ pub mod forge3d_mesh;
 pub mod gibson;
 pub mod infoevo_core;
 pub mod infoevo_svg;
+pub mod json_util;
 pub mod kinetics_core;
 pub mod kinetics_svg;
 pub mod lexi_engine;
@@ -251,6 +254,7 @@ pub use forge3d_mesh::*;
 pub use gibson::*;
 pub use infoevo_core::*;
 pub use infoevo_svg::*;
+pub use json_util::*;
 pub use kinetics_core::*;
 pub use kinetics_svg::*;
 pub use lexi_engine::*;
@@ -510,5 +514,45 @@ mod tests {
         assert!(!parse_stream_do_csv(&bom(&demo_stream_diel_do_csv())).unwrap().is_empty());
         assert!(parse_fasta_alignment("BomAln", &bom(demo_ecoli_promoter_and_stemloop_fasta())).is_ok());
         assert!(parse_newick("BomTree", &bom("(A:0.1,B:0.2);")).is_ok());
+    }
+
+    #[test]
+    fn panic_resistance_nan_coordinates_empty_slices_and_malformed_inputs() {
+        // 1. NaN / Inf / missing coordinates in Darwin Core spatial scrubber
+        let bb = TaxonBackbone::default_curated();
+        let nan_csv = "occurrenceID,scientificName,decimalLatitude,decimalLongitude\n\
+            1,Oncorhynchus kisutch,NaN,NaN\n\
+            2,Oncorhynchus kisutch,inf,-inf\n\
+            3,Oncorhynchus kisutch,44.56,-123.26\n\
+            4,Oncorhynchus kisutch,44.58,-123.28\n\
+            5,Oncorhynchus kisutch,44.60,-123.30\n\
+            6,Oncorhynchus kisutch,44.62,-123.31\n";
+        let ds = lint_and_clean_dwc("nan_coord_test", nan_csv, &bb, &DwcCleanConfig::default())
+            .expect("NaN coordinates should report lint errors rather than panicking");
+        assert!(ds.summary().records_with_errors >= 2);
+        let json_out = export_biodiversity_summary_json(&ds);
+        assert!(json_out.contains("\"dataset_name\": \"nan_coord_test\""));
+
+        // 2. Empty slices and empty sequence inputs across core engines
+        assert!(analyze_popgen_fasta(&[]).is_err());
+        assert!(compute_kaplan_meier_curves(&[]).is_empty());
+        assert_eq!(hurlbert_expected_richness(&[], 10), 0.0);
+        assert!(scan_crispr_candidates("", CrisprNuclease::SpCas9).is_err());
+        assert!(parse_fasta_alignment("empty", "").is_err());
+        assert!(parse_phylo_trees("empty", "").is_err());
+        assert!(parse_newick("unmatched", "(((A:0.1,B:0.2);").is_err());
+        let _ = parse_newick("empty", "");
+        assert!(normalize_dna("").is_err());
+
+        // 3. Malformed UTF-8 lossy recovery & malformed FASTA / binary inputs
+        let bad_utf8 = String::from_utf8_lossy(b">bad_seq\nACGT\xFF\xFE\x80TGCA\n");
+        assert!(parse_fasta_alignment("bad_utf8", &bad_utf8).is_err());
+        assert!(scan_crispr_candidates(&bad_utf8, CrisprNuclease::SpCas9).is_err());
+        assert!(parse_popgen_fasta(&bad_utf8).is_err()); // malformed replacement chars cleanly rejected without panic
+        let mut truncated_stl = vec![0u8; 90];
+        truncated_stl[0] = 0xFF;
+        truncated_stl[80] = 10;
+        assert!(parse_stl_bytes("truncated_stl", &truncated_stl).is_err());
+        assert!(parse_fcs_bytes(&[0u8; 16]).is_err());
     }
 }

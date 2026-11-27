@@ -609,7 +609,7 @@ Extraction_Blank,CATGCATG,GTACGTAC,negative_blank
     // Add 2 single-nucleotide sequencing error reads of Coho (66x parent -> absorbed by UNOISE skew >= 8!)
     let mut coho_err = taxa_seqs[0].1.clone().into_bytes();
     coho_err[10] = b'G';
-    let coho_err_s = String::from_utf8(coho_err).unwrap();
+    let coho_err_s = String::from_utf8_lossy(&coho_err).into_owned();
     emit_read(&sample_tags[0].0, &sample_tags[0].1, &coho_err_s, 'F');
     emit_read(&sample_tags[0].0, &sample_tags[0].1, &coho_err_s, 'F');
 

@@ -92,6 +92,10 @@ pub enum CrisprSubcommand {
         /// Optional path to write the ranked CRISPR target locus map as `.svg`.
         #[arg(long)]
         svg_out: Option<PathBuf>,
+
+        /// Optional path to write a reproducible structured JSON summary (`.json`).
+        #[arg(long)]
+        json_out: Option<PathBuf>,
     },
 
     /// Compute exact Doench et al. (2016) `CFD` off-target probability for a 20-nt spacer vs. 23-nt target+PAM.
@@ -123,6 +127,7 @@ pub fn run_crispr_cli(args: CrisprArgs) -> Result<(), String> {
             nuclease,
             tsv_out,
             svg_out,
+            json_out,
         }) => {
             let (demo_t, demo_bg) = demo_crispr_target_and_offtargets();
             let t_raw = if let Some(tp) = target {
@@ -183,6 +188,18 @@ pub fn run_crispr_cli(args: CrisprArgs) -> Result<(), String> {
                 fs::write(&out, svg)
                     .map_err(|e| format!("Failed writing SVG '{}': {e}", out.display()))?;
                 println!("Wrote CRISPR Locus SVG -> {}", out.display());
+            }
+            if let Some(out) = json_out {
+                let json = crate::json_util::export_crispr_summary_json(
+                    "cli_design",
+                    nuc,
+                    seq.len(),
+                    &guides,
+                    25,
+                );
+                fs::write(&out, json)
+                    .map_err(|e| format!("Failed writing JSON summary '{}': {e}", out.display()))?;
+                println!("Wrote CRISPR Summary JSON -> {}", out.display());
             }
             Ok(())
         }

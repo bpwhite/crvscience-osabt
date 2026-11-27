@@ -102,7 +102,7 @@ pub fn parse_melt_csv(raw: &str) -> Result<Vec<MeltTrace>, String> {
 
     let mut traces = Vec::with_capacity(grouped.len());
     for ((well_id, sample_id, target_gene), mut pts) in grouped {
-        pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        pts.sort_by(|a, b| a.0.total_cmp(&b.0));
         traces.push(MeltTrace {
             well_id,
             sample_id,
@@ -194,7 +194,7 @@ pub fn analyze_melt_curve(trace: &MeltTrace, dimer_cutoff_c: f64) -> MeltCurveRe
         }
     }
 
-    raw_peaks.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+    raw_peaks.sort_by(|a, b| b.2.total_cmp(&a.2));
     let mut peaks = Vec::with_capacity(raw_peaks.len());
     for &(idx, tm_c, pk_h) in &raw_peaks {
         let half = 0.5 * pk_h;

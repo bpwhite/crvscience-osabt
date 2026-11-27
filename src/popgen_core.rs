@@ -770,7 +770,7 @@ pub fn demo_pnw_popgen_fasta() -> String {
         for &(p, b) in positions {
             s[p] = b;
         }
-        String::from_utf8(s).unwrap()
+        String::from_utf8_lossy(&s).into_owned()
     };
 
     // Cascade_Headwaters: 3 deep clades radiating symmetrically from unsampled ancestor `anc` (MV_1)

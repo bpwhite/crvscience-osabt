@@ -638,7 +638,10 @@ pub fn calc_degenerate_tm_bounds(
         }
     }
 
-    Ok((min_res.unwrap(), max_res.unwrap(), count))
+    match (min_res, max_res) {
+        (Some(min_r), Some(max_r)) => Ok((min_r, max_r, count)),
+        _ => Err(OligoError::EmptySequence),
+    }
 }
 
 /// Computes forward/reverse primer `Tm` values and recommends the optimal PCR annealing

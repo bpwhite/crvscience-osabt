@@ -449,12 +449,14 @@ fn emit_rectangular_edges_svg(
         return;
     }
 
-    let first_cy = y_px[&node.children[0]];
-    let last_cy = y_px[node.children.last().unwrap()];
-    let _ = writeln!(
-        svg,
-        "  <line x1=\"{ux:.1}\" y1=\"{first_cy:.1}\" x2=\"{ux:.1}\" y2=\"{last_cy:.1}\" stroke=\"#334155\" stroke-width=\"1.6\"/>"
-    );
+    if let (Some(first_ch), Some(last_ch)) = (node.children.first(), node.children.last()) {
+        let first_cy = y_px[first_ch];
+        let last_cy = y_px[last_ch];
+        let _ = writeln!(
+            svg,
+            "  <line x1=\"{ux:.1}\" y1=\"{first_cy:.1}\" x2=\"{ux:.1}\" y2=\"{last_cy:.1}\" stroke=\"#334155\" stroke-width=\"1.6\"/>"
+        );
+    }
 
     if let Some(sup) = node.support_pct {
         let col = if sup >= 95.0 {
@@ -575,17 +577,19 @@ fn emit_circular_edges_svg(
         return;
     }
 
-    let a0 = theta[&node.children[0]];
-    let a1 = theta[node.children.last().unwrap()];
-    let x0 = cx + ur * a0.cos();
-    let y0 = cy + ur * a0.sin();
-    let x1 = cx + ur * a1.cos();
-    let y1 = cy + ur * a1.sin();
-    let large_arc = usize::from((a1 - a0).abs() > PI);
-    let _ = writeln!(
-        svg,
-        "  <path d=\"M {x0:.2} {y0:.2} A {ur:.2} {ur:.2} 0 {large_arc} 1 {x1:.2} {y1:.2}\" fill=\"none\" stroke=\"#334155\" stroke-width=\"1.4\"/>"
-    );
+    if let (Some(first_ch), Some(last_ch)) = (node.children.first(), node.children.last()) {
+        let a0 = theta[first_ch];
+        let a1 = theta[last_ch];
+        let x0 = cx + ur * a0.cos();
+        let y0 = cy + ur * a0.sin();
+        let x1 = cx + ur * a1.cos();
+        let y1 = cy + ur * a1.sin();
+        let large_arc = usize::from((a1 - a0).abs() > PI);
+        let _ = writeln!(
+            svg,
+            "  <path d=\"M {x0:.2} {y0:.2} A {ur:.2} {ur:.2} 0 {large_arc} 1 {x1:.2} {y1:.2}\" fill=\"none\" stroke=\"#334155\" stroke-width=\"1.4\"/>"
+        );
+    }
 
     for &ch in &node.children {
         let cr = rad[&ch];

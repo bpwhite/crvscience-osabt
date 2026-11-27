@@ -473,25 +473,26 @@ impl PhyloTree {
 
         // Suppress degree-2 old root if it now has only 1 remaining child (`len() == 1` after reversal)
         let old_root = self.root;
-        if self.nodes[old_root].children.len() == 1 && self.nodes[old_root].parent.is_some() {
-            let sole_child = self.nodes[old_root].children[0];
-            let new_par_of_old_root = self.nodes[old_root].parent.unwrap();
-            let merged_bl = self.nodes[old_root].branch_length.unwrap_or(0.0)
-                + self.nodes[sole_child].branch_length.unwrap_or(0.0);
-            let has_bl = self.nodes[old_root].branch_length.is_some()
-                || self.nodes[sole_child].branch_length.is_some();
+        if self.nodes[old_root].children.len() == 1 {
+            if let Some(new_par_of_old_root) = self.nodes[old_root].parent {
+                let sole_child = self.nodes[old_root].children[0];
+                let merged_bl = self.nodes[old_root].branch_length.unwrap_or(0.0)
+                    + self.nodes[sole_child].branch_length.unwrap_or(0.0);
+                let has_bl = self.nodes[old_root].branch_length.is_some()
+                    || self.nodes[sole_child].branch_length.is_some();
 
-            for slot in &mut self.nodes[new_par_of_old_root].children {
-                if *slot == old_root {
-                    *slot = sole_child;
+                for slot in &mut self.nodes[new_par_of_old_root].children {
+                    if *slot == old_root {
+                        *slot = sole_child;
+                    }
                 }
+                self.nodes[sole_child].parent = Some(new_par_of_old_root);
+                if has_bl {
+                    self.nodes[sole_child].branch_length = Some(merged_bl);
+                }
+                self.nodes[old_root].children.clear();
+                self.nodes[old_root].parent = None;
             }
-            self.nodes[sole_child].parent = Some(new_par_of_old_root);
-            if has_bl {
-                self.nodes[sole_child].branch_length = Some(merged_bl);
-            }
-            self.nodes[old_root].children.clear();
-            self.nodes[old_root].parent = None;
         }
 
         // Create new bifurcating root node between `target_node` and `orig_parent`
@@ -610,7 +611,9 @@ impl PhyloTree {
 
         let mut cur = u;
         while cur != mrca {
-            let p = self.nodes[cur].parent.unwrap();
+            let p = self.nodes[cur]
+                .parent
+                .ok_or_else(|| String::from("Node parent missing along path to MRCA."))?;
             let bl = self.nodes[cur].branch_length.unwrap_or(0.0).max(0.0);
             edges.push((cur, p, cur, bl));
             cur = p;
@@ -619,7 +622,9 @@ impl PhyloTree {
         let mut down = Vec::new();
         let mut cur_v = v;
         while cur_v != mrca {
-            let p = self.nodes[cur_v].parent.unwrap();
+            let p = self.nodes[cur_v]
+                .parent
+                .ok_or_else(|| String::from("Node parent missing along path to MRCA."))?;
             let bl = self.nodes[cur_v].branch_length.unwrap_or(0.0).max(0.0);
             down.push((p, cur_v, cur_v, bl));
             cur_v = p;
@@ -1078,7 +1083,9 @@ pub fn compare_robinson_foulds(
         ));
     }
 
-    let anchor = shared.iter().next().unwrap().clone();
+    let Some(anchor) = shared.iter().next().cloned() else {
+        return Err(String::from("Robinson-Foulds comparison requires shared taxa."));
+    };
     let splits_a = extract_canonical_splits(tree_a, &shared, &anchor);
     let splits_b = extract_canonical_splits(tree_b, &shared, &anchor);
 

@@ -60,6 +60,9 @@ pub enum DwcSubcommand {
         /// Optional path to save the tab-separated QA diagnostic ledger (.tsv).
         #[arg(short, long)]
         report_out: Option<PathBuf>,
+        /// Optional path to save a reproducible structured JSON audit summary (.json).
+        #[arg(long)]
+        json_out: Option<PathBuf>,
     },
 
     /// Scrub headers, DMS coordinates, transposed lat/lon, ISO dates, and synonyms into clean CSV.
@@ -153,6 +156,7 @@ pub fn run_dwc_cli(args: DwcArgs) -> Result<(), String> {
             input,
             checklist,
             report_out,
+            json_out,
         }) => {
             let backbone = load_backbone(checklist.as_ref())?;
             let (name, raw) = load_input_or_demo(input.as_ref())?;
@@ -184,6 +188,11 @@ pub fn run_dwc_cli(args: DwcArgs) -> Result<(), String> {
                 fs::write(&rp, export_issues_tsv(&ds))
                     .map_err(|e| format!("Failed writing report '{}': {e}", rp.display()))?;
                 println!("Saved TSV audit ledger -> {}", rp.display());
+            }
+            if let Some(jp) = json_out {
+                fs::write(&jp, crate::json_util::export_biodiversity_summary_json(&ds))
+                    .map_err(|e| format!("Failed writing JSON summary '{}': {e}", jp.display()))?;
+                println!("Saved JSON audit summary -> {}", jp.display());
             }
             Ok(())
         }

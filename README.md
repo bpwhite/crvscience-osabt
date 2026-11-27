@@ -27,6 +27,13 @@ cargo run -- ecosound gui
 cargo run -- flux gui
 ```
 
+### Safety, Panic-Hardening & Reproducible JSON Export
+
+- **Memory & Unsafe Code Guarantees**: `src/lib.rs` enforces `#![forbid(unsafe_code)]` across the entire 20-tool library; `src/main.rs` enforces `#![deny(unsafe_code)]` with `#[allow(unsafe_code)]` strictly scoped to the Windows `AttachConsole` FFI call.
+- **Zero-Panic Production Paths**: All non-test `.unwrap()` calls across core parsers, spatial/statistical sorters (`f64::total_cmp`), binary `.fcs`/`.stl`/`.bmp` readers, and UTF-8 decoders have been eliminated (`0` remaining).
+- **Structured JSON Summary Export (`osabt::json_util`)**: Deterministic, `NaN`-safe structured JSON summary exporters (`BatchRunSummary`, `export_biodiversity_summary_json`, `export_crispr_summary_json`, `export_statistical_summary_json`, `export_popgen_summary_json`, `export_edna_diversity_summary_json`), plus `--json-out <PATH>` on `osabt dwc lint` and `osabt crispr design`.
+- **Test Suite (`cargo test --release`)**: `93 passed; 0 failed` (`85` library unit tests including panic-resistance edge-case tests for `NaN` coordinates, empty slices, and malformed UTF-8/FASTA/binary inputs + `2` `headless_gui` + `3` `headless_validation` + `3` `suite_integration`).
+
 ### Feature Flags & Top-Level CLI Flags
 
 - **`default = ["cli", "tui", "gui"]`** — Unified `osabt` binary with all 20 subcommands, Ratatui TUIs, and `eframe`/`egui` desktop studios.

@@ -196,12 +196,7 @@ pub fn fit_four_param_logistic(
     let init_x50 = xs
         .iter()
         .zip(&ys)
-        .min_by(|a, b| {
-            (a.1 - half_y)
-                .abs()
-                .partial_cmp(&(b.1 - half_y).abs())
-                .unwrap()
-        })
+        .min_by(|a, b| (a.1 - half_y).abs().total_cmp(&(b.1 - half_y).abs()))
         .map(|(&x, _)| x)
         .unwrap_or(x_mid);
 

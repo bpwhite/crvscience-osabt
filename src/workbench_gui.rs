@@ -532,10 +532,10 @@ impl OsabtWorkbenchApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let pill_txt = match self.active_tool {
-                        Some(id) => {
-                            let m = TOOL_CATALOG.iter().find(|t| t.id == id).unwrap();
-                            format!("Active: #{} {}", m.num, m.short_name)
-                        }
+                        Some(id) => match TOOL_CATALOG.iter().find(|t| t.id == id) {
+                            Some(m) => format!("Active: #{} {}", m.num, m.short_name),
+                            None => String::from("OSABT v2.0.0 • 20 Tools"),
+                        },
                         None => String::from("OSABT v2.0.0 • 20 Tools"),
                     };
                     egui::Frame::none()

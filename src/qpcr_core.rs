@@ -388,10 +388,11 @@ pub fn compute_genorm_reference_stability(
             })
             .collect();
 
-        let (worst_idx, worst_name, worst_m) = m_now
-            .into_iter()
-            .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
-            .unwrap();
+        let Some((worst_idx, worst_name, worst_m)) =
+            m_now.into_iter().max_by(|a, b| a.2.total_cmp(&b.2))
+        else {
+            break;
+        };
         results.push(GeNormGeneStability {
             gene_name: worst_name,
             stability_m: worst_m,
@@ -418,7 +419,7 @@ pub fn compute_genorm_reference_stability(
         }
     }
 
-    results.sort_by(|a, b| a.stability_m.partial_cmp(&b.stability_m).unwrap());
+    results.sort_by(|a, b| a.stability_m.total_cmp(&b.stability_m));
     results
 }
 

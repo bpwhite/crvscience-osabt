@@ -665,7 +665,11 @@ pub fn design_multiplex_pool(
                 best_choice = Some((pool_pen, cand));
             }
         }
-        chosen.push((locus_name, best_choice.unwrap().1));
+        let (_, selected_pair) = best_choice.ok_or_else(|| OligoError::AssemblyDesignFailed {
+            junction_index: chosen.len(),
+            reason: format!("No valid primer pair found for locus '{locus_name}'."),
+        })?;
+        chosen.push((locus_name, selected_pair));
     }
 
     // Build full 2N x 2N 3'-extensible dimer matrix for terminal/GUI heatmap inspection

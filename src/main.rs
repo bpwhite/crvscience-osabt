@@ -17,6 +17,7 @@
 // Copyright (C) 2026 Bryan P. White — CRV Science Network (https://crvscience.com)
 // Open Source Ad-hoc Biology Tools (OSABT v2.0.0) — Unified CLI, TUI & GUI Entrypoint
 
+#![deny(unsafe_code)]
 #![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
 
 use std::io::Write as _;
@@ -159,6 +160,7 @@ fn attach_parent_console_if_cli() {
         const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
         // SAFETY: Win32 AttachConsole(ATTACH_PARENT_PROCESS) attaches stdout/stderr to the invoking
         // console when CLI arguments are passed to a `windows_subsystem = "windows"` binary.
+        #[allow(unsafe_code)]
         unsafe {
             let _ = AttachConsole(ATTACH_PARENT_PROCESS);
         }

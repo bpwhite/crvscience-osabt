@@ -174,10 +174,12 @@ pub fn parse_fcs_bytes(bytes: &[u8]) -> Result<FcsDataset, String> {
         for ch in &channels {
             let val = match datatype.as_str() {
                 "F" => {
-                    if cursor + 4 > payload.len() {
+                    let Some(arr) = payload
+                        .get(cursor..cursor + 4)
+                        .and_then(|s| <[u8; 4]>::try_from(s).ok())
+                    else {
                         return Err(format!("Unexpected EOF reading f32 at event {ev}."));
-                    }
-                    let arr: [u8; 4] = payload[cursor..cursor + 4].try_into().unwrap();
+                    };
                     cursor += 4;
                     let v = if little_endian {
                         f32::from_le_bytes(arr)
@@ -187,10 +189,12 @@ pub fn parse_fcs_bytes(bytes: &[u8]) -> Result<FcsDataset, String> {
                     v as f64
                 }
                 "D" => {
-                    if cursor + 8 > payload.len() {
+                    let Some(arr) = payload
+                        .get(cursor..cursor + 8)
+                        .and_then(|s| <[u8; 8]>::try_from(s).ok())
+                    else {
                         return Err(format!("Unexpected EOF reading f64 at event {ev}."));
-                    }
-                    let arr: [u8; 8] = payload[cursor..cursor + 8].try_into().unwrap();
+                    };
                     cursor += 8;
                     if little_endian {
                         f64::from_le_bytes(arr)

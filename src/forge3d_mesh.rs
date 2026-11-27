@@ -407,9 +407,24 @@ pub fn parse_stl_bytes(name: &str, bytes: &[u8]) -> Result<TriMesh, String> {
                 let mut tri = [0u32; 3];
                 for (vi, slot) in tri.iter_mut().enumerate() {
                     let voff = off + vi * 12;
-                    let x = f32::from_le_bytes(bytes[voff..voff + 4].try_into().unwrap());
-                    let y = f32::from_le_bytes(bytes[voff + 4..voff + 8].try_into().unwrap());
-                    let z = f32::from_le_bytes(bytes[voff + 8..voff + 12].try_into().unwrap());
+                    let x = f32::from_le_bytes(
+                        bytes
+                            .get(voff..voff + 4)
+                            .and_then(|s| s.try_into().ok())
+                            .ok_or_else(|| String::from("Truncated binary STL vertex X."))?,
+                    );
+                    let y = f32::from_le_bytes(
+                        bytes
+                            .get(voff + 4..voff + 8)
+                            .and_then(|s| s.try_into().ok())
+                            .ok_or_else(|| String::from("Truncated binary STL vertex Y."))?,
+                    );
+                    let z = f32::from_le_bytes(
+                        bytes
+                            .get(voff + 8..voff + 12)
+                            .and_then(|s| s.try_into().ok())
+                            .ok_or_else(|| String::from("Truncated binary STL vertex Z."))?,
+                    );
                     let key = [x.to_bits(), y.to_bits(), z.to_bits()];
                     let idx = *vmap.entry(key).or_insert_with(|| {
                         let id = mesh.vertices.len() as u32;

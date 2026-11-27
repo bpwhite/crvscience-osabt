@@ -254,7 +254,9 @@ pub fn decode_single_word(word: &str) -> DecodedWord {
     let mut raw_segs = Vec::new();
     let mut cur = n;
     while cur > 0 {
-        let edge = dp[cur].clone().unwrap();
+        let Some(edge) = dp[cur].clone() else {
+            break;
+        };
         raw_segs.push(edge.seg);
         cur = edge.prev;
     }

@@ -25,6 +25,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::dwc_core::{dwc_term_iri, DwcDataset};
+use crate::json_util::json_escape;
 use crate::svg_util::{begin_svg_canvas, xml_escape};
 
 /// Serializes a [`DwcDataset`] to RFC-4180 CSV (or TSV when `delimiter == '\t'`).
@@ -362,22 +363,6 @@ pub fn render_dwc_occurrence_map_svg(dataset: &DwcDataset) -> String {
     );
     svg.push_str("</svg>\n");
     svg
-}
-
-
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

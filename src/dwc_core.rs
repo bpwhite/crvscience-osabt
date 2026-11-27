@@ -1674,37 +1674,45 @@ fn detect_conspecific_spatial_outliers(
         let mut lats: Vec<f64> = indices
             .iter()
             .filter_map(|&i| records[i].valid_lat_lon.map(|p| p.0))
+            .filter(|v| v.is_finite())
             .collect();
         let mut lons: Vec<f64> = indices
             .iter()
             .filter_map(|&i| records[i].valid_lat_lon.map(|p| p.1))
+            .filter(|v| v.is_finite())
             .collect();
-        lats.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        lons.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        if lats.is_empty() || lons.is_empty() {
+            continue;
+        }
+        lats.sort_by(f64::total_cmp);
+        lons.sort_by(f64::total_cmp);
         let med_lat = lats[lats.len() / 2];
         let med_lon = lons[lons.len() / 2];
 
-        let mut dists: Vec<f64> = indices
+        let pairs: Vec<(usize, (f64, f64), f64)> = indices
             .iter()
-            .map(|&i| {
-                let (la, lo) = records[i].valid_lat_lon.unwrap();
-                haversine_km(la, lo, med_lat, med_lon)
+            .filter_map(|&i| {
+                records[i]
+                    .valid_lat_lon
+                    .filter(|&(la, lo)| la.is_finite() && lo.is_finite())
+                    .map(|(la, lo)| (i, (la, lo), haversine_km(la, lo, med_lat, med_lon)))
             })
             .collect();
-        let mut sorted_d = dists.clone();
-        sorted_d.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        if pairs.is_empty() {
+            continue;
+        }
+        let mut sorted_d: Vec<f64> = pairs.iter().map(|p| p.2).collect();
+        sorted_d.sort_by(f64::total_cmp);
         let med_d = sorted_d[sorted_d.len() / 2];
 
         let mut abs_dev: Vec<f64> = sorted_d.iter().map(|d| (d - med_d).abs()).collect();
-        abs_dev.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        abs_dev.sort_by(f64::total_cmp);
         let mad_km = (abs_dev[abs_dev.len() / 2] * 1.4826).max(50.0);
         let threshold_km = (med_d + 5.0 * mad_km).max(350.0);
 
-        for (pos, &rec_idx) in indices.iter().enumerate() {
-            let d_km = dists[pos];
+        for (rec_idx, (la, lo), d_km) in pairs {
             if d_km > threshold_km {
                 records[rec_idx].has_warnings = true;
-                let (la, lo) = records[rec_idx].valid_lat_lon.unwrap();
                 issues.push(DwcLintIssue {
                     row_number_1: records[rec_idx].row_number_1,
                     column_term: String::from("decimalLatitude"),
@@ -1720,7 +1728,6 @@ fn detect_conspecific_spatial_outliers(
                 });
             }
         }
-        let _ = &mut dists;
     }
 }
 

@@ -412,7 +412,7 @@ pub fn compute_alignment_information(
                     heights.push((syms[i] as char, f_b * corr_ic));
                 }
             }
-            heights.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            heights.sort_by(|a, b| a.1.total_cmp(&b.1));
         }
 
         sites.push(SiteInformationProfile {
@@ -639,7 +639,7 @@ pub fn compute_epistasis_mip_matrix(
         })
         .collect();
 
-    scored.sort_by(|a, b| b.mip_bits.partial_cmp(&a.mip_bits).unwrap());
+    scored.sort_by(|a, b| b.mip_bits.total_cmp(&a.mip_bits));
     scored.truncate(top_k.max(1));
 
     EpistasisMatrixReport {
@@ -923,7 +923,9 @@ pub fn simulate_kimura_selection_information(
         }
     }
 
-    let last = steps.last().unwrap();
+    let Some(last) = steps.last() else {
+        return Err(String::from("No evolutionary simulation steps generated."));
+    };
     Ok(KimuraSelectionReport {
         num_alleles: p0.len(),
         generations,

@@ -344,7 +344,10 @@ fn select_optimal_5p_core(
         }
     }
 
-    let (_, chosen, tm) = best.unwrap();
+    let (_, chosen, tm) = best.ok_or(OligoError::AssemblyDesignFailed {
+        junction_index: 0,
+        reason: String::from("No valid primer candidate within configured length bounds."),
+    })?;
     Ok((chosen, tm))
 }
 

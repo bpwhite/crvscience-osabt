@@ -194,7 +194,10 @@ pub fn detect_calls_in_band(
     }
 
     let mut sorted_db = frame_band_db.clone();
-    sorted_db.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if sorted_db.is_empty() {
+        return Vec::new();
+    }
+    sorted_db.sort_by(f64::total_cmp);
     let noise_floor_db = sorted_db[sorted_db.len() / 2];
     let trigger_db = noise_floor_db + cfg.snr_threshold_db;
 

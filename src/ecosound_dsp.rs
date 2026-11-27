@@ -785,7 +785,7 @@ pub fn compute_ecoacoustic_indices(
     };
 
     let mut sorted_p = props;
-    sorted_p.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted_p.sort_by(f64::total_cmp);
     let aei_gini = if prop_sum > 1e-12 {
         let n_b = sorted_p.len() as f64;
         let weighted: f64 = sorted_p

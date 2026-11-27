@@ -568,7 +568,7 @@ pub fn fit_global_reversible_inhibition(
     let best_3p = fits
         .iter()
         .min_by(|a, b| a.sse.total_cmp(&b.sse))
-        .unwrap();
+        .ok_or_else(|| String::from("No 3-parameter inhibition fits available."))?;
     let init_alpha = match best_3p.mechanism {
         InhibitionMechanism::Competitive => 20.0_f64,
         InhibitionMechanism::Uncompetitive => 0.05_f64,

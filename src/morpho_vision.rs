@@ -222,11 +222,39 @@ impl RgbImage {
 }
 
 fn parse_bmp_rgb(bytes: &[u8]) -> Result<RgbImage, String> {
-    let data_offset = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
-    let width_i = i32::from_le_bytes(bytes[18..22].try_into().unwrap());
-    let height_i = i32::from_le_bytes(bytes[22..26].try_into().unwrap());
-    let bpp = u16::from_le_bytes(bytes[28..30].try_into().unwrap());
-    let compression = u32::from_le_bytes(bytes[30..34].try_into().unwrap());
+    if bytes.len() < 34 {
+        return Err(String::from("Truncated BMP header."));
+    }
+    let data_offset = u32::from_le_bytes(
+        bytes
+            .get(10..14)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| String::from("Truncated BMP data offset."))?,
+    ) as usize;
+    let width_i = i32::from_le_bytes(
+        bytes
+            .get(18..22)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| String::from("Truncated BMP width."))?,
+    );
+    let height_i = i32::from_le_bytes(
+        bytes
+            .get(22..26)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| String::from("Truncated BMP height."))?,
+    );
+    let bpp = u16::from_le_bytes(
+        bytes
+            .get(28..30)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| String::from("Truncated BMP bpp."))?,
+    );
+    let compression = u32::from_le_bytes(
+        bytes
+            .get(30..34)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| String::from("Truncated BMP compression."))?,
+    );
 
     if width_i <= 0 || height_i == 0 || (bpp != 24 && bpp != 32) || compression != 0 {
         return Err(String::from(
@@ -812,11 +840,7 @@ fn convex_hull_area(pts: &mut [(f64, f64)]) -> f64 {
     if pts.len() < 3 {
         return 0.0;
     }
-    pts.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0)
-            .unwrap()
-            .then_with(|| a.1.partial_cmp(&b.1).unwrap())
-    });
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
 
     let cross2 = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| -> f64 {
         (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)

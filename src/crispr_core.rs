@@ -172,8 +172,12 @@ pub fn scan_crispr_candidates(
                 for i in 0..=(n.saturating_sub(23)) {
                     let pam = &s_bytes[(i + 20)..(i + 23)];
                     if pam[1] == b'G' && pam[2] == b'G' && is_acgt(&s_bytes[i..(i + 23)]) {
-                        let spacer = std::str::from_utf8(&s_bytes[i..(i + 20)]).unwrap();
-                        let pam_s = std::str::from_utf8(pam).unwrap();
+                        let Ok(spacer) = std::str::from_utf8(&s_bytes[i..(i + 20)]) else {
+                            continue;
+                        };
+                        let Ok(pam_s) = std::str::from_utf8(pam) else {
+                            continue;
+                        };
                         let ctx30 = extract_30mer_context(s_bytes, i);
                         let (p_start, p_end, cut) = if strand == '+' {
                             (i + 1, i + 20, i + 17)
@@ -204,8 +208,12 @@ pub fn scan_crispr_candidates(
                         && matches!(pam[4], b'A' | b'G')
                         && pam[5] == b'T';
                     if is_nngrrt && is_acgt(&s_bytes[i..(i + 27)]) {
-                        let spacer = std::str::from_utf8(&s_bytes[i..(i + 21)]).unwrap();
-                        let pam_s = std::str::from_utf8(pam).unwrap();
+                        let Ok(spacer) = std::str::from_utf8(&s_bytes[i..(i + 21)]) else {
+                            continue;
+                        };
+                        let Ok(pam_s) = std::str::from_utf8(pam) else {
+                            continue;
+                        };
                         let (p_start, p_end, cut) = if strand == '+' {
                             (i + 1, i + 21, i + 18)
                         } else {
@@ -234,8 +242,12 @@ pub fn scan_crispr_candidates(
                         && pam[2] == b'T'
                         && matches!(pam[3], b'A' | b'C' | b'G');
                     if is_tttv && is_acgt(&s_bytes[i..(i + 24)]) {
-                        let spacer = std::str::from_utf8(&s_bytes[(i + 4)..(i + 24)]).unwrap();
-                        let pam_s = std::str::from_utf8(pam).unwrap();
+                        let Ok(spacer) = std::str::from_utf8(&s_bytes[(i + 4)..(i + 24)]) else {
+                            continue;
+                        };
+                        let Ok(pam_s) = std::str::from_utf8(pam) else {
+                            continue;
+                        };
                         let (p_start, p_end, cut) = if strand == '+' {
                             (i + 5, i + 24, i + 22)
                         } else {
