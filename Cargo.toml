@@ -10,6 +10,7 @@ repository = "https://github.com/bpwhite/crvscience-osabt"
 homepage = "https://crvscience.com/apps"
 keywords = ["biology", "bioinformatics", "ecology", "ecophysiology", "biostatistics"]
 categories = ["science", "command-line-utilities", "gui", "wasm"]
+readme = "README.md"
 
 [lib]
 name = "osabt"
